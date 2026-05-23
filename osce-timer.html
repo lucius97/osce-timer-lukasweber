@@ -510,12 +510,9 @@ let sessionCode = null;
 let isController = false;
 let localState = null;
 let ticker = null;
-let presenceTicker = null;
 let lastSoundKeys = {};
 let audioCtx = null;
 let audioReady = false;
-let controllerLastSeen = null;   // timestamp of last heartbeat we received
-let controllerOfflineBannerShown = false;
 
 // ── Audio ────────────────────────────────────────────────
 
@@ -610,55 +607,62 @@ function clearControllerClaim(code) {
   localStorage.removeItem(controllerKey(code));
 }
 
-// ── Presence / heartbeat ─────────────────────────────────
+// ── Presence — Firebase server-side detection ────────────
+//
+// Strategy: when the controller connects, we write `presence/online = true`
+// and register an onDisconnect() to set it to false. Firebase executes
+// the onDisconnect write on its server the moment the WebSocket drops —
+// no client polling, no timing drift, no false positives from backgrounded tabs.
 
 function startPresenceHeartbeat() {
   if (!sessionRef || !isController) return;
   presenceRef = sessionRef.child('presence');
 
-  function beat() {
-    if (!sessionRef) return;
-    presenceRef.set({ ts: Date.now(), id: getStoredControllerId(sessionCode) });
-  }
-  beat();
-  presenceTicker = setInterval(beat, 5000);
+  // Watch our own connection state via Firebase's reserved path
+  db.ref('.info/connected').on('value', snap => {
+    if (!snap.val()) return; // we're offline ourselves — do nothing
 
-  // Do NOT use onDisconnect().remove() on the whole session —
-  // that would wipe the session when controller closes the tab.
-  // Instead just let presence go stale; observers detect it.
-  presenceRef.onDisconnect().set({ ts: 0, id: '' });
+    // Tell Firebase: when THIS connection drops, mark controller offline
+    presenceRef.onDisconnect().set({ online: false, id: '' });
+
+    // Mark controller as online right now
+    presenceRef.set({
+      online: true,
+      id: getStoredControllerId(sessionCode)
+    });
+  });
 }
 
 function stopPresenceHeartbeat() {
-  clearInterval(presenceTicker);
-  presenceTicker = null;
+  // Cancel pending onDisconnect writes so a deliberate disconnect
+  // (end session / reset) doesn't falsely trigger the offline banner
+  if (presenceRef) presenceRef.onDisconnect().cancel();
+  db.ref('.info/connected').off();
 }
 
 function watchControllerPresence() {
   if (!sessionRef || isController) return;
+
   sessionRef.child('presence').on('value', snap => {
     const data = snap.val();
-    controllerLastSeen = (data && data.ts) ? data.ts : null;
-    updateControllerOfflineBanner();
+    // online===false means Firebase executed the onDisconnect write —
+    // the controller's connection genuinely dropped.
+    // null means presence was never written (session just started).
+    const offline = !data || data.online === false;
+    const banner = document.getElementById('ctrl-offline-banner');
+    if (!banner) return;
+    if (offline) {
+      banner.style.display = 'flex';
+    } else {
+      banner.style.display = 'none';
+    }
   });
 }
 
 function updateControllerOfflineBanner() {
-  const banner = document.getElementById('ctrl-offline-banner');
-  if (!banner) return;
-  if (isController) { banner.style.display = 'none'; return; }
-
-  const stale = !controllerLastSeen || (Date.now() - controllerLastSeen > 12000);
-  if (stale) {
-    banner.style.display = 'flex';
-    controllerOfflineBannerShown = true;
-  } else {
-    banner.style.display = 'none';
-  }
+  // No-op: banner is now driven purely by the Firebase presence listener above.
+  // Kept so existing call-sites don't throw.
 }
-
-// Poll staleness every 6s (heartbeat is every 5s, grace is 12s)
-setInterval(updateControllerOfflineBanner, 6000);
 
 // ── Promote observer to controller ───────────────────────
 
@@ -795,7 +799,6 @@ function startObserving() {
     if (!snap.exists()) {
       // Session was explicitly deleted (controller called endSession)
       clearInterval(ticker);
-      clearInterval(presenceTicker);
       showPage('page-ended');
       document.getElementById('ended-msg').textContent = 'The session was ended by the controller.';
       return;
