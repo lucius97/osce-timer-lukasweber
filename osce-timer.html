@@ -596,6 +596,21 @@ let advancing = false; // guard against double-advance
 let audioCtx = null;
 const deviceId = Math.random().toString(36).slice(2, 10); // unique per tab
 let audioReady = false;
+let serverTimeOffset = 0; // ms difference: serverTime = Date.now() + serverTimeOffset
+
+// Sync clock offset from Firebase as soon as db is ready.
+// /.info/serverTimeOffset gives us (serverTime - localTime) in ms.
+function syncServerClock() {
+  if (!db) return;
+  db.ref('.info/serverTimeOffset').on('value', snap => {
+    serverTimeOffset = snap.val() || 0;
+  });
+}
+
+// Use this instead of Date.now() everywhere we need a clock-synced time.
+function now() {
+  return Date.now() + serverTimeOffset;
+}
 
 // ── Audio ────────────────────────────────────────────────
 //
@@ -788,6 +803,7 @@ function initFirebase() {
   try {
     if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
     db = firebase.database();
+    syncServerClock();
     return true;
   } catch(e) {
     console.error('Firebase init failed:', e);
@@ -973,18 +989,18 @@ function startSession() {
 
 function beginSession() {
   if (!sessionRef || !isController) return;
-  const now = Date.now();
+  const t = now();
   const cfg2 = localState.cfg;
   const update = {
     phase: 'change',
     stationIdx: 0,
     completedStations: 0,
-    phaseStartedAt: now,
-    phaseEndsAt: now + cfg2.breakSecs * 1000,
+    phaseStartedAt: t,
+    phaseEndsAt: t + cfg2.breakSecs * 1000,
     pausedAt: null,
     totalPausedMs: 0,
     soundLog: {},
-    ts: now
+    ts: t
   };
   Object.assign(localState, update);
   sessionRef.update(update);
@@ -1151,7 +1167,7 @@ function startTicker() {
       ticker = setTimeout(() => { renderTimer(); scheduleNext(); }, 250);
       return;
     }
-    const remaining = localState.phaseEndsAt - Date.now();
+    const remaining = localState.phaseEndsAt - now();
     // How many ms until the next whole-second boundary?
     const msUntilNextSecond = ((remaining % 1000) + 1000) % 1000 || 1000;
     // Fire 30ms after the boundary so we're safely past it
@@ -1192,8 +1208,8 @@ function updateDots() {
 
 function phaseElapsed() {
   if (!localState || !localState.phaseStartedAt) return 0;
-  const now = localState.pausedAt ? localState.pausedAt : Date.now();
-  return now - localState.phaseStartedAt - (localState.totalPausedMs || 0);
+  const t = localState.pausedAt ? localState.pausedAt : now();
+  return t - localState.phaseStartedAt - (localState.totalPausedMs || 0);
 }
 
 function phaseTotalMs(s) {
@@ -1208,8 +1224,8 @@ function phaseRemaining() {
   if (!localState) return 0;
   if (localState.phaseEndsAt) {
     // When paused, freeze time at the moment pause was pressed
-    const now = localState.pausedAt ? localState.pausedAt : Date.now();
-    return Math.max(0, localState.phaseEndsAt - now);
+    const t = localState.pausedAt ? localState.pausedAt : now();
+    return Math.max(0, localState.phaseEndsAt - t);
   }
   return Math.max(0, phaseTotalMs(localState) - phaseElapsed());
 }
@@ -1388,11 +1404,11 @@ function cancelScheduledAdvance() {
 function advanceToPrep() {
   if (!sessionRef || advancing) return;
   advancing = true;
-  const now = Date.now();
+  const t = now();
   const prepSecs = (localState.cfg.prepSecs || 30);
   const update = {
-    phase: 'prep', phaseStartedAt: now,
-    phaseEndsAt: now + prepSecs * 1000,
+    phase: 'prep', phaseStartedAt: t,
+    phaseEndsAt: t + prepSecs * 1000,
     pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now
   };
   sessionRef.update(update).then(() => { advancing = false; });
@@ -1404,10 +1420,10 @@ function advanceToPrep() {
 function advanceToStation() {
   if (!sessionRef || advancing) return;
   advancing = true;
-  const now = Date.now();
+  const t = now();
   const update = {
-    phase: 'station', phaseStartedAt: now,
-    phaseEndsAt: now + localState.cfg.stationSecs * 1000,
+    phase: 'station', phaseStartedAt: t,
+    phaseEndsAt: t + localState.cfg.stationSecs * 1000,
     pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now
   };
   sessionRef.update(update).then(() => { advancing = false; });
@@ -1427,12 +1443,12 @@ function advanceToChangeOrEnd() {
     soundOnce('session-end', playStationEnd);
     return;
   }
-  const now = Date.now();
+  const t = now();
   const nextIdx = localState.stationIdx + 1;
   const update = {
     phase: 'change', stationIdx: nextIdx,
-    completedStations: newCompleted, phaseStartedAt: now,
-    phaseEndsAt: now + localState.cfg.breakSecs * 1000,
+    completedStations: newCompleted, phaseStartedAt: t,
+    phaseEndsAt: t + localState.cfg.breakSecs * 1000,
     pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now
   };
   sessionRef.update(update).then(() => { advancing = false; });
@@ -1456,7 +1472,7 @@ function rollbackPhase() {
   if (!isController || !sessionRef || !localState) return;
   const s = localState;
   const cfg = s.cfg;
-  const now = Date.now();
+  const t = now();
 
   let update;
 
@@ -1465,31 +1481,31 @@ function rollbackPhase() {
     update = {
       phase: 'prep', stationIdx: s.stationIdx,
       completedStations: Math.max(0, s.stationIdx),
-      phaseStartedAt: now, phaseEndsAt: now + (cfg.prepSecs||30) * 1000,
-      pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now
+      phaseStartedAt: t, phaseEndsAt: t + (cfg.prepSecs||30) * 1000,
+      pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: t
     };
   } else if (s.phase === 'prep') {
     // prep → change (same station)
     update = {
       phase: 'change', stationIdx: s.stationIdx,
       completedStations: Math.max(0, s.stationIdx),
-      phaseStartedAt: now, phaseEndsAt: now + cfg.breakSecs * 1000,
-      pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now
+      phaseStartedAt: t, phaseEndsAt: t + cfg.breakSecs * 1000,
+      pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: t
     };
   } else if (s.phase === 'change' && s.stationIdx === 0) {
     // first change → waiting
     update = {
       phase: 'waiting', stationIdx: 0, completedStations: 0,
       phaseStartedAt: null, phaseEndsAt: null,
-      pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now
+      pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: t
     };
   } else if (s.phase === 'change' && s.stationIdx > 0) {
     // change → previous station
     const prevIdx = s.stationIdx - 1;
     update = {
       phase: 'station', stationIdx: prevIdx, completedStations: prevIdx,
-      phaseStartedAt: now, phaseEndsAt: now + cfg.stationSecs * 1000,
-      pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now
+      phaseStartedAt: t, phaseEndsAt: t + cfg.stationSecs * 1000,
+      pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: t
     };
   } else {
     return;
@@ -1503,7 +1519,7 @@ function rollbackPhase() {
 
   if (db && sessionCode) {
     if (update.phase === 'waiting') {
-      db.ref('sessionIndex/' + sessionCode).update({ phase: 'waiting', stationIdx: 0, updatedAt: now });
+      db.ref('sessionIndex/' + sessionCode).update({ phase: 'waiting', stationIdx: 0, updatedAt: t });
     } else {
       updateSessionIndex(update.phase, update.stationIdx);
     }
@@ -1532,10 +1548,10 @@ function applyRetime() {
   const slider = document.getElementById('retime-slider');
   if (!slider) return;
   const newDurMs = parseInt(slider.value) * 1000;
-  const now = Date.now();
+  const t = now();
   const update = {
-    phaseStartedAt: now,
-    phaseEndsAt: now + newDurMs,
+    phaseStartedAt: t,
+    phaseEndsAt: t + newDurMs,
     totalPausedMs: 0,
     pausedAt: null,
     ts: now
@@ -1549,21 +1565,20 @@ function applyRetime() {
 
 function togglePause() {
   if (!isController || !sessionRef) return;
-  const now = Date.now();
+  const t = now();
   if (localState.pausedAt) {
-    const added = now - localState.pausedAt;
+    const added = t - localState.pausedAt;
     const newPausedMs = (localState.totalPausedMs || 0) + added;
-    // Shift phaseEndsAt forward by the pause duration so the timer stays accurate
     const newEndsAt = localState.phaseEndsAt ? localState.phaseEndsAt + added : null;
     const update = {
       pausedAt: null,
       totalPausedMs: newPausedMs,
       phaseEndsAt: newEndsAt,
-      ts: now
+      ts: t
     };
     Object.assign(localState, update); sessionRef.update(update);
   } else {
-    const update = { pausedAt: now, ts: now };
+    const update = { pausedAt: t, ts: t };
     Object.assign(localState, update); sessionRef.update(update);
   }
   renderTimer();
