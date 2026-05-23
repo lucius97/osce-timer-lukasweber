@@ -633,6 +633,7 @@ function saveSoundPrefs() {
 // through the AudioContext so it works reliably off the main thread.
 
 const audioBufferCache = {}; // filename → decoded AudioBuffer
+const audioRawCache   = {}; // filename → ArrayBuffer (pre-fetched, not yet decoded)
 
 document.addEventListener('click',      unlockAudio);
 document.addEventListener('touchstart', unlockAudio);
@@ -641,52 +642,106 @@ function unlockAudio() {
   if (audioReady) return;
   try {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    audioReady = true;
   } catch(e) { return; }
-  if (audioCtx.state === 'suspended') audioCtx.resume();
-  // Pre-fetch all configured sound files so they're decoded and cached
-  SOUND_EVENTS.forEach(evt => {
-    const filename = soundFiles[evt];
-    if (filename) prefetchAudio(filename);
-  });
+
+  // iOS suspends AudioContext immediately after creation.
+  // We must resume() inside a gesture AND wait for it to complete
+  // before calling decodeAudioData — so chain everything in the promise.
+  const doAfterResume = () => {
+    audioReady = true;
+    // Pre-fetch raw bytes for all sound files (no decoding yet)
+    SOUND_EVENTS.forEach(evt => {
+      const filename = soundFiles[evt];
+      if (filename) prefetchRaw(filename);
+    });
+  };
+
+  if (audioCtx.state === 'suspended') {
+    audioCtx.resume().then(doAfterResume).catch(doAfterResume);
+  } else {
+    doAfterResume();
+  }
 }
 
 function observerUnlockAudio() {
-  // Called by the explicit "Enable sound" button tap — guaranteed gesture context on iOS
-  unlockAudio();
-  // Play a silent buffer to fully unblock iOS audio pipeline
-  if (audioCtx) {
-    const buf = audioCtx.createBuffer(1, 1, 22050);
-    const src = audioCtx.createBufferSource();
-    src.buffer = buf;
-    src.connect(audioCtx.destination);
-    src.start(0);
+  // Explicit tap from observer — guaranteed iOS gesture context.
+  // Create context fresh if not yet created, or resume if suspended.
+  if (!audioCtx) {
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    } catch(e) {}
   }
-  // Hide the banner
-  const banner = document.getElementById('sound-unlock-banner');
-  if (banner) banner.style.display = 'none';
+
+  const finish = () => {
+    audioReady = true;
+    // Play a silent buffer — fully unblocks the iOS audio pipeline
+    try {
+      const buf = audioCtx.createBuffer(1, 1, 22050);
+      const src = audioCtx.createBufferSource();
+      src.buffer = buf;
+      src.connect(audioCtx.destination);
+      src.start(0);
+    } catch(e) {}
+    // Decode any raw bytes already fetched
+    Object.keys(audioRawCache).forEach(f => decodeRaw(f));
+    // Fetch anything not yet fetched
+    SOUND_EVENTS.forEach(evt => {
+      const filename = soundFiles[evt];
+      if (filename) prefetchRaw(filename);
+    });
+    const banner = document.getElementById('sound-unlock-banner');
+    if (banner) banner.style.display = 'none';
+  };
+
+  if (audioCtx.state === 'suspended') {
+    audioCtx.resume().then(finish).catch(finish);
+  } else {
+    finish();
+  }
 }
 
-function prefetchAudio(filename) {
-  if (!audioCtx || audioBufferCache[filename] !== undefined) return;
-  audioBufferCache[filename] = null; // mark as loading
+// Step 1: fetch raw bytes (no AudioContext needed — safe to do any time)
+function prefetchRaw(filename) {
+  if (audioRawCache[filename] !== undefined) return; // already fetched or fetching
+  audioRawCache[filename] = null; // mark as in-progress
   fetch(filename)
     .then(r => { if (!r.ok) throw new Error(r.status); return r.arrayBuffer(); })
-    .then(buf => audioCtx.decodeAudioData(buf))
+    .then(raw => {
+      audioRawCache[filename] = raw;
+      // Decode immediately if AudioContext is ready and running
+      if (audioCtx && audioCtx.state === 'running') decodeRaw(filename);
+    })
+    .catch(() => {
+      audioRawCache[filename] = false; // file not found
+      audioBufferCache[filename] = false;
+    });
+}
+
+// Step 2: decode raw bytes into an AudioBuffer (requires running AudioContext)
+function decodeRaw(filename) {
+  if (!audioCtx || audioCtx.state !== 'running') return;
+  if (audioBufferCache[filename] !== undefined) return; // already decoded/failed
+  const raw = audioRawCache[filename];
+  if (!raw) return; // not fetched yet or failed
+  audioBufferCache[filename] = null; // decoding in progress
+  // decodeAudioData needs a copy — it detaches the ArrayBuffer
+  audioCtx.decodeAudioData(raw.slice(0))
     .then(decoded => { audioBufferCache[filename] = decoded; })
-    .catch(() => { audioBufferCache[filename] = false; }); // false = not available
+    .catch(() => { audioBufferCache[filename] = false; });
 }
 
 function playBuffer(buffer) {
   if (!audioCtx || !buffer) return;
   if (audioCtx.state === 'suspended') audioCtx.resume();
-  const src = audioCtx.createBufferSource();
-  const gain = audioCtx.createGain();
-  src.buffer = buffer;
-  gain.gain.value = 0.9;
-  src.connect(gain);
-  gain.connect(audioCtx.destination);
-  src.start(0);
+  try {
+    const src = audioCtx.createBufferSource();
+    const gain = audioCtx.createGain();
+    src.buffer = buffer;
+    gain.gain.value = 0.9;
+    src.connect(gain);
+    gain.connect(audioCtx.destination);
+    src.start(0);
+  } catch(e) {}
 }
 
 function tone(freq, dur, vol=0.38, delay=0) {
@@ -720,28 +775,45 @@ function playSound(event) {
   const filename = soundFiles[event];
   if (!filename) { if (FALLBACK_TONES[event]) FALLBACK_TONES[event](); return; }
 
-  const cached = audioBufferCache[filename];
-  if (cached) {
-    // Already decoded — play immediately via AudioContext (iOS-safe)
-    playBuffer(cached);
-  } else if (cached === false || !audioCtx) {
-    // File unavailable or AudioContext not ready — use fallback tone
-    if (FALLBACK_TONES[event]) FALLBACK_TONES[event]();
-  } else {
-    // Still loading (null) or not yet fetched — fetch now and play when ready
-    if (cached === undefined) prefetchAudio(filename);
-    fetch(filename)
-      .then(r => { if (!r.ok) throw new Error(r.status); return r.arrayBuffer(); })
-      .then(buf => audioCtx.decodeAudioData(buf))
-      .then(decoded => {
-        audioBufferCache[filename] = decoded;
-        playBuffer(decoded);
-      })
-      .catch(() => {
-        audioBufferCache[filename] = false;
-        if (FALLBACK_TONES[event]) FALLBACK_TONES[event]();
-      });
+  const buf = audioBufferCache[filename];
+
+  if (buf) {
+    // Decoded and ready — play via AudioContext
+    playBuffer(buf);
+    return;
   }
+
+  if (buf === false) {
+    // File confirmed unavailable — use fallback tone
+    if (FALLBACK_TONES[event]) FALLBACK_TONES[event]();
+    return;
+  }
+
+  // buf is null (decoding) or undefined (not started) —
+  // try to decode now if raw bytes are available
+  if (audioCtx && audioCtx.state === 'running') {
+    if (audioRawCache[filename]) {
+      // Raw bytes ready — decode and play
+      audioCtx.decodeAudioData(audioRawCache[filename].slice(0))
+        .then(decoded => {
+          audioBufferCache[filename] = decoded;
+          playBuffer(decoded);
+        })
+        .catch(() => {
+          audioBufferCache[filename] = false;
+          if (FALLBACK_TONES[event]) FALLBACK_TONES[event]();
+        });
+      return;
+    }
+    if (audioRawCache[filename] === false) {
+      // Fetch failed — use fallback
+      if (FALLBACK_TONES[event]) FALLBACK_TONES[event]();
+      return;
+    }
+  }
+
+  // AudioContext not ready or raw not fetched yet — use fallback tone
+  if (FALLBACK_TONES[event]) FALLBACK_TONES[event]();
 }
 
 // Named wrappers used by phase logic
@@ -1622,7 +1694,7 @@ function initSoundPanel() {
   container.innerHTML = '';
   // Prefetch all sound files when panel opens — ensures they're cached for iOS
   if (audioCtx) SOUND_EVENTS.forEach(evt => {
-    const f = soundFiles[evt]; if (f) prefetchAudio(f);
+    const f = soundFiles[evt]; if (f) prefetchRaw(f);
   });
   SOUND_EVENTS.forEach(evt => {
     const row = document.createElement('div');
@@ -1660,7 +1732,7 @@ function saveSoundSettings() {
       if (newFile !== soundFiles[evt]) {
         soundFiles[evt] = newFile;
         delete audioBufferCache[newFile]; // clear cache so it re-fetches
-        if (audioCtx && newFile) prefetchAudio(newFile);
+        if (audioCtx && newFile) prefetchRaw(newFile);
       }
     }
   });
