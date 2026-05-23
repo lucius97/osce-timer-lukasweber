@@ -1042,6 +1042,11 @@ function startObserving() {
       });
     }
 
+    // Sound cue listener — fires on all devices when controller writes a cue
+    sessionRef.child('soundCue').on('value', snap => {
+      if (snap.exists()) onSoundCue(snap.val());
+    });
+
     sessionRef.on('value', snap => {
       if (!snap.exists()) {
         stopTicker();
@@ -1241,10 +1246,24 @@ function phaseRemaining() {
   }
   return Math.max(0, phaseTotalMs(localState) - phaseElapsed());
 }
+// Client-side dedup — prevents playing the same cue twice on one device
 function soundOnce(key, fn) {
   if (lastSoundKeys[key]) return;
   lastSoundKeys[key] = true;
   fn();
+}
+
+// Write a sound cue to Firebase so ALL devices receive and play it.
+// Only the controller calls this; all devices react via the soundCue listener.
+function fireSoundCue(event, key) {
+  if (!isController || !sessionRef) return;
+  sessionRef.child('soundCue').set({ event, key, at: now() });
+}
+
+// Called from the Firebase listener whenever soundCue changes.
+function onSoundCue(cue) {
+  if (!cue || !cue.key || !cue.event) return;
+  soundOnce(cue.key, () => playSound(cue.event));
 }
 
 // ── Render ───────────────────────────────────────────────
@@ -1368,10 +1387,13 @@ function renderTimer() {
     }
     sub.textContent = 'Station ' + (idx + 1) + ' of ' + cfg.stations;
 
-    if (secsLeft <= cfg.warnSecs + 1 && secsLeft > cfg.warnSecs - 2)
-      soundOnce('warn-' + idx, playOneMinWarn);
-    if (secsLeft <= 4 && secsLeft >= 1)
-      soundOnce('end-' + idx, playStationEnd);
+    // Controller fires cues to Firebase; all devices receive via soundCue listener
+    if (isController) {
+      if (secsLeft <= cfg.warnSecs && secsLeft > cfg.warnSecs - 2)
+        fireSoundCue('warning', 'warn-' + idx);
+      if (secsLeft <= 3 && secsLeft >= 1)
+        fireSoundCue('session-end', 'end-' + idx);
+    }
 
     if (remaining <= 0) scheduleAdvance('change');
   }
@@ -1425,7 +1447,7 @@ function advanceToPrep() {
   };
   sessionRef.update(update).then(() => { advancing = false; });
   lastSoundKeys = {};
-  soundOnce('prep-start-' + localState.stationIdx, playPrepStart);
+  fireSoundCue('prep-start', 'prep-start-' + localState.stationIdx);
   updateSessionIndex('prep', localState.stationIdx);
 }
 
@@ -1440,7 +1462,7 @@ function advanceToStation() {
   };
   sessionRef.update(update).then(() => { advancing = false; });
   lastSoundKeys = {};
-  soundOnce('block-start-' + localState.stationIdx, playSessionStart);
+  fireSoundCue('session-start', 'block-start-' + localState.stationIdx);
   updateSessionIndex('station', localState.stationIdx);
 }
 
@@ -1452,7 +1474,7 @@ function advanceToChangeOrEnd() {
     const update = { phase: 'ended', ts: now() };
     sessionRef.update(update).then(() => { advancing = false; });
     if (db && sessionCode) db.ref('sessionIndex/' + sessionCode).remove();
-    soundOnce('session-end', playStationEnd);
+    fireSoundCue('session-end', 'session-end-final');
     return;
   }
   const t = now();
