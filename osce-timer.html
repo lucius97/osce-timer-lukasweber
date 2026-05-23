@@ -1016,7 +1016,7 @@ function startObserving() {
 
     sessionRef.on('value', snap => {
       if (!snap.exists()) {
-        clearInterval(ticker);
+        stopTicker();
         showPage('page-ended');
         document.getElementById('ended-msg').textContent = 'The session was ended by the controller.';
         return;
@@ -1137,9 +1137,31 @@ function initTimerPage() {
 
   buildDots();
   showPage('page-timer');
-  if (ticker) clearInterval(ticker);
-  ticker = setInterval(renderTimer, 250);
+  startTicker();
   renderTimer();
+}
+
+function startTicker() {
+  stopTicker();
+  // Schedule renders to fire just after each whole-second boundary of phaseEndsAt.
+  // All devices share the same phaseEndsAt so they all tick at the same ms.
+  function scheduleNext() {
+    if (!localState || !localState.phaseEndsAt || localState.pausedAt) {
+      // No phaseEndsAt or paused — fall back to 250ms polling
+      ticker = setTimeout(() => { renderTimer(); scheduleNext(); }, 250);
+      return;
+    }
+    const remaining = localState.phaseEndsAt - Date.now();
+    // How many ms until the next whole-second boundary?
+    const msUntilNextSecond = ((remaining % 1000) + 1000) % 1000 || 1000;
+    // Fire 30ms after the boundary so we're safely past it
+    ticker = setTimeout(() => { renderTimer(); scheduleNext(); }, msUntilNextSecond + 30);
+  }
+  scheduleNext();
+}
+
+function stopTicker() {
+  if (ticker) { clearTimeout(ticker); ticker = null; }
 }
 
 // ── Dot helpers ──────────────────────────────────────────
@@ -1236,7 +1258,7 @@ function renderTimer() {
     }
   }
   if (localState.phase === 'ended') {
-    clearInterval(ticker);
+    stopTicker();
     stopPresenceHeartbeat();
     showPage('page-ended');
     document.getElementById('ended-msg').textContent =
@@ -1251,9 +1273,11 @@ function renderTimer() {
   const remaining = phaseRemaining();
   // Use Math.floor throughout so display, sound triggers and advance logic
   // all agree on the same second — no more "running ahead" on slow timers.
-  const dMins    = Math.floor(remaining / 60000);
-  const dSecs    = Math.floor((remaining % 60000) / 1000);
-  const secsLeft = dMins * 60 + dSecs; // derived from display values, not re-rounded
+  // Round to nearest whole second for display so all devices show the same value
+  const remainSec = Math.round(remaining / 1000);
+  const dMins    = Math.floor(remainSec / 60);
+  const dSecs    = remainSec % 60;
+  const secsLeft = remainSec;
   const timeStr  = String(dMins).padStart(2,'0') + ':' + String(dSecs).padStart(2,'0');
   const frac      = totalMs > 0 ? remaining / totalMs : 0;
 
@@ -1551,7 +1575,7 @@ function endSession() {
   clearControllerClaim(sessionCode);
   if (db && sessionCode) db.ref('sessionIndex/' + sessionCode).remove();
   sessionRef.remove();
-  clearInterval(ticker);
+  stopTicker();
   stopPresenceHeartbeat();
   showPage('page-ended');
   document.getElementById('ended-msg').textContent = 'Session ended by controller.';
@@ -1666,8 +1690,7 @@ function resetSoundDefaults() {
 
 function goHome() {
   // Tear down any active session listeners and timers
-  clearInterval(ticker);
-  ticker = null;
+  stopTicker();
   if (sessionRef) {
     sessionRef.child('observers/' + deviceId).remove();
     sessionRef.off();
