@@ -36,8 +36,8 @@ Each station cycle runs: **Change → Prep → Station** → repeat
 | Phase | Purpose | Default duration |
 |---|---|---|
 | Change | Candidates move between stations | 60 s (configurable) |
-| Prep | Read the brief, get ready | 30 s (configurable) |
-| Station | The exam itself | 8 min (configurable) |
+| Prep | Read the brief, get ready | 60 s (configurable) |
+| Station | The exam itself | 4 min (configurable) |
 
 ---
 
