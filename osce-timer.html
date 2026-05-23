@@ -770,6 +770,18 @@ function playSound(event) {
     if (FALLBACK_TONES[event]) FALLBACK_TONES[event]();
   }
 }
+
+// Named wrappers — keep call sites clean
+function playSessionStart()  { playSound('session-start'); }
+function playSessionEnd()    { playSound('session-end'); }
+function playPrepStart()     { playSound('prep-start'); }
+function playOneMinWarn()    { playSound('warning'); }
+// Aliases used by advance/rollback call sites
+function playTwoToneStart()  { playSessionStart(); }
+function playStationStart()  { playSessionStart(); }
+function playStationEnd()    { playSessionEnd(); }
+function playBreakWarn()     { playSessionStart(); }
+
 // ── Utilities ────────────────────────────────────────────
 
 function showPage(id) {
