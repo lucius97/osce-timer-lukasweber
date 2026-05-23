@@ -618,12 +618,11 @@ function now() {
 // Falls back to a generated tone if the file fails to load.
 // Controller can override filenames via the sound settings panel.
 //
-// Default file names (place these in the same folder as osce-timer.html):
-//   session-start.mp3  — played at start of Station (block start, after Prep)
-//   prep-start.mp3     — played at start of Prep phase
-//   station-start.mp3  — played at start of Station phase
-//   station-end.mp3    — played when station time is up
-//   warning.mp3        — played at the 1-minute warning
+// Default file names (place in the same folder as osce-timer.html):
+//   session-start.mp3  — block start (fires after Prep, at start of Station)
+//   session-end.mp3    — session complete
+//   prep-start.mp3     — start of Prep phase
+//   warning.mp3        — 1-minute station warning
 
 const SOUND_EVENTS = ['session-start','session-end','prep-start','warning'];
 
@@ -943,7 +942,6 @@ async function createSession() {
     phaseStartedAt: null,
     pausedAt: null,
     totalPausedMs: 0,
-    soundLog: {},
     controllerToken: controllerId,
     createdAt: Date.now(),
     ts: Date.now()
@@ -1011,7 +1009,6 @@ function beginSession() {
     phaseEndsAt: t + cfg2.breakSecs * 1000,
     pausedAt: null,
     totalPausedMs: 0,
-    soundLog: {},
     ts: t
   };
   Object.assign(localState, update);
@@ -1104,12 +1101,12 @@ async function catchUpOverduePhases() {
       const prepSecs = state.cfg.prepSecs || 30;
       state = { ...state, phase: 'prep',
         phaseStartedAt: endsAt, phaseEndsAt: endsAt + prepSecs * 1000,
-        pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now() };
+        pausedAt: null, totalPausedMs: 0, ts: now() };
 
     } else if (state.phase === 'prep') {
       state = { ...state, phase: 'station',
         phaseStartedAt: endsAt, phaseEndsAt: endsAt + state.cfg.stationSecs * 1000,
-        pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now() };
+        pausedAt: null, totalPausedMs: 0, ts: now() };
 
     } else if (state.phase === 'station') {
       const newCompleted = state.stationIdx + 1;
@@ -1121,7 +1118,7 @@ async function catchUpOverduePhases() {
       state = { ...state, phase: 'change', stationIdx: nextIdx,
         completedStations: newCompleted,
         phaseStartedAt: endsAt, phaseEndsAt: endsAt + state.cfg.breakSecs * 1000,
-        pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now() };
+        pausedAt: null, totalPausedMs: 0, ts: now() };
     }
   }
 
@@ -1443,7 +1440,7 @@ function advanceToPrep() {
   const update = {
     phase: 'prep', phaseStartedAt: t,
     phaseEndsAt: t + prepSecs * 1000,
-    pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: t
+    pausedAt: null, totalPausedMs: 0, ts: t
   };
   sessionRef.update(update).then(() => { advancing = false; });
   lastSoundKeys = {};
@@ -1458,7 +1455,7 @@ function advanceToStation() {
   const update = {
     phase: 'station', phaseStartedAt: t,
     phaseEndsAt: t + localState.cfg.stationSecs * 1000,
-    pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: t
+    pausedAt: null, totalPausedMs: 0, ts: t
   };
   sessionRef.update(update).then(() => { advancing = false; });
   lastSoundKeys = {};
@@ -1483,7 +1480,7 @@ function advanceToChangeOrEnd() {
     phase: 'change', stationIdx: nextIdx,
     completedStations: newCompleted, phaseStartedAt: t,
     phaseEndsAt: t + localState.cfg.breakSecs * 1000,
-    pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: t
+    pausedAt: null, totalPausedMs: 0, ts: t
   };
   sessionRef.update(update).then(() => { advancing = false; });
   lastSoundKeys = {};
@@ -1516,7 +1513,7 @@ function rollbackPhase() {
       phase: 'prep', stationIdx: s.stationIdx,
       completedStations: Math.max(0, s.stationIdx),
       phaseStartedAt: t, phaseEndsAt: t + (cfg.prepSecs||30) * 1000,
-      pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: t
+      pausedAt: null, totalPausedMs: 0, ts: t
     };
   } else if (s.phase === 'prep') {
     // prep → change (same station)
@@ -1524,14 +1521,14 @@ function rollbackPhase() {
       phase: 'change', stationIdx: s.stationIdx,
       completedStations: Math.max(0, s.stationIdx),
       phaseStartedAt: t, phaseEndsAt: t + cfg.breakSecs * 1000,
-      pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: t
+      pausedAt: null, totalPausedMs: 0, ts: t
     };
   } else if (s.phase === 'change' && s.stationIdx === 0) {
     // first change → waiting
     update = {
       phase: 'waiting', stationIdx: 0, completedStations: 0,
       phaseStartedAt: null, phaseEndsAt: null,
-      pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: t
+      pausedAt: null, totalPausedMs: 0, ts: t
     };
   } else if (s.phase === 'change' && s.stationIdx > 0) {
     // change → previous station
@@ -1539,7 +1536,7 @@ function rollbackPhase() {
     update = {
       phase: 'station', stationIdx: prevIdx, completedStations: prevIdx,
       phaseStartedAt: t, phaseEndsAt: t + cfg.stationSecs * 1000,
-      pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: t
+      pausedAt: null, totalPausedMs: 0, ts: t
     };
   } else {
     return;
