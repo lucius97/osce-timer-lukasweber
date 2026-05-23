@@ -1099,24 +1099,24 @@ async function catchUpOverduePhases() {
       const prepSecs = state.cfg.prepSecs || 30;
       state = { ...state, phase: 'prep',
         phaseStartedAt: endsAt, phaseEndsAt: endsAt + prepSecs * 1000,
-        pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now };
+        pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now() };
 
     } else if (state.phase === 'prep') {
       state = { ...state, phase: 'station',
         phaseStartedAt: endsAt, phaseEndsAt: endsAt + state.cfg.stationSecs * 1000,
-        pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now };
+        pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now() };
 
     } else if (state.phase === 'station') {
       const newCompleted = state.stationIdx + 1;
       if (newCompleted >= state.cfg.stations) {
-        state = { ...state, phase: 'ended', ts: now };
+        state = { ...state, phase: 'ended', ts: now() };
         break;
       }
       const nextIdx = state.stationIdx + 1;
       state = { ...state, phase: 'change', stationIdx: nextIdx,
         completedStations: newCompleted,
         phaseStartedAt: endsAt, phaseEndsAt: endsAt + state.cfg.breakSecs * 1000,
-        pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now };
+        pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now() };
     }
   }
 
@@ -1421,7 +1421,7 @@ function advanceToPrep() {
   const update = {
     phase: 'prep', phaseStartedAt: t,
     phaseEndsAt: t + prepSecs * 1000,
-    pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now
+    pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: t
   };
   sessionRef.update(update).then(() => { advancing = false; });
   lastSoundKeys = {};
@@ -1436,7 +1436,7 @@ function advanceToStation() {
   const update = {
     phase: 'station', phaseStartedAt: t,
     phaseEndsAt: t + localState.cfg.stationSecs * 1000,
-    pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now
+    pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: t
   };
   sessionRef.update(update).then(() => { advancing = false; });
   lastSoundKeys = {};
@@ -1449,7 +1449,7 @@ function advanceToChangeOrEnd() {
   advancing = true;
   const newCompleted = localState.stationIdx + 1;
   if (newCompleted >= localState.cfg.stations) {
-    const update = { phase: 'ended', ts: Date.now() };
+    const update = { phase: 'ended', ts: now() };
     sessionRef.update(update).then(() => { advancing = false; });
     if (db && sessionCode) db.ref('sessionIndex/' + sessionCode).remove();
     soundOnce('session-end', playStationEnd);
@@ -1461,7 +1461,7 @@ function advanceToChangeOrEnd() {
     phase: 'change', stationIdx: nextIdx,
     completedStations: newCompleted, phaseStartedAt: t,
     phaseEndsAt: t + localState.cfg.breakSecs * 1000,
-    pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now
+    pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: t
   };
   sessionRef.update(update).then(() => { advancing = false; });
   lastSoundKeys = {};
@@ -1566,7 +1566,7 @@ function applyRetime() {
     phaseEndsAt: t + newDurMs,
     totalPausedMs: 0,
     pausedAt: null,
-    ts: now
+    ts: now()
   };
   Object.assign(localState, update);
   sessionRef.update(update);
