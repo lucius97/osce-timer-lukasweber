@@ -599,21 +599,20 @@ let audioReady = false;
 // Controller can override filenames via the sound settings panel.
 //
 // Default file names (place these in the same folder as osce-timer.html):
-//   change-start.mp3   — played at start of Change phase
+//   session-start.mp3  — played at start of Station (block start, after Prep)
 //   prep-start.mp3     — played at start of Prep phase
 //   station-start.mp3  — played at start of Station phase
 //   station-end.mp3    — played when station time is up
 //   warning.mp3        — played at the 1-minute warning
 
-const SOUND_EVENTS = ['change-start','prep-start','station-start','station-end','warning'];
+const SOUND_EVENTS = ['session-start','session-end','prep-start','warning'];
 
 // Loaded from localStorage so they survive refresh
 let soundFiles = JSON.parse(localStorage.getItem('osce_sounds') || 'null') || {
-  'change-start':   'change-start.mp3',
-  'prep-start':     'prep-start.mp3',
-  'station-start':  'station-start.mp3',
-  'station-end':    'station-end.mp3',
-  'warning':        'warning.mp3'
+  'session-start': 'session-start.mp3',
+  'session-end':   'session-end.mp3',
+  'prep-start':    'prep-start.mp3',
+  'warning':       'warning.mp3'
 };
 
 let soundEnabled = JSON.parse(localStorage.getItem('osce_sound_enabled') || 'true');
@@ -655,10 +654,9 @@ function tone(freq, dur, vol=0.38, delay=0) {
 
 // Fallback tones used when mp3 file fails or is missing
 const FALLBACK_TONES = {
-  'change-start':  () => { tone(660,.18,.4,0); tone(880,.22,.4,.22); },
+  'session-start': () => { tone(660,.18,.4,0); tone(880,.22,.4,.22); },
+  'session-end':   () => { tone(880,.1,.44,0); tone(880,.1,.44,.14); tone(660,.1,.44,.28); tone(440,.35,.44,.42); },
   'prep-start':    () => { tone(880,.18,.4,0); tone(1046,.22,.4,.22); },
-  'station-start': () => { tone(660,.18,.4,0); tone(880,.18,.4,.22); tone(1046,.3,.4,.44); },
-  'station-end':   () => { tone(880,.1,.44,0); tone(880,.1,.44,.14); tone(660,.1,.44,.28); tone(440,.35,.44,.42); },
   'warning':       () => { tone(520,.14,.38,0); tone(520,.14,.38,.22); tone(520,.14,.38,.44); }
 };
 
@@ -678,13 +676,15 @@ function playSound(event) {
 }
 
 // Named wrappers used by phase logic
-function playTwoToneStart()  { playSound('change-start'); }
+function playSessionStart()  { playSound('session-start'); }
+function playSessionEnd()    { playSound('session-end'); }
 function playPrepStart()     { playSound('prep-start'); }
-function playStationStart()  { playSound('station-start'); }
-function playStationEnd()    { playSound('station-end'); }
 function playOneMinWarn()    { playSound('warning'); }
-// keep legacy names pointing to new system
-function playBreakWarn()     { playSound('change-start'); }
+// aliases kept so call sites don't need updating
+function playTwoToneStart()  { playSessionStart(); }
+function playStationStart()  { playSessionStart(); }
+function playStationEnd()    { playSessionEnd(); }
+function playBreakWarn()     { playSessionStart(); }
 
 // ── Utilities ────────────────────────────────────────────
 
@@ -922,7 +922,6 @@ function beginSession() {
   if (db && sessionCode && localState.cfg) {
     db.ref('sessionIndex/' + sessionCode).update({ phase: 'change', stationIdx: 0, updatedAt: Date.now() });
   }
-  soundOnce('change-start-0', playTwoToneStart);
 }
 
 function startObserving() {
@@ -1312,7 +1311,7 @@ function advanceToStation() {
   };
   sessionRef.update(update).then(() => { advancing = false; });
   lastSoundKeys = {};
-  soundOnce('station-start-' + localState.stationIdx, playTwoToneStart);
+  soundOnce('block-start-' + localState.stationIdx, playSessionStart);
   updateSessionIndex('station', localState.stationIdx);
 }
 
@@ -1337,7 +1336,6 @@ function advanceToChangeOrEnd() {
   };
   sessionRef.update(update).then(() => { advancing = false; });
   lastSoundKeys = {};
-  soundOnce('change-start-' + nextIdx, playTwoToneStart);
   updateSessionIndex('change', nextIdx);
 }
 
@@ -1511,10 +1509,9 @@ function copyRunningLink() {
 // ── Sound settings panel ─────────────────────────────────
 
 const SOUND_LABELS = {
-  'change-start':  'Start of Change',
-  'prep-start':    'Start of Prep',
-  'station-start': 'Start of Station',
-  'station-end':   'End of Station',
+  'session-start': 'Block start (after Prep)',
+  'session-end':   'Session end',
+  'prep-start':    'Prep start',
   'warning':       '1-minute warning'
 };
 
@@ -1568,10 +1565,9 @@ function testAllSounds() {
 
 function resetSoundDefaults() {
   soundFiles = {
-    'change-start':  'change-start.mp3',
+    'session-start': 'session-start.mp3',
+    'session-end':   'session-end.mp3',
     'prep-start':    'prep-start.mp3',
-    'station-start': 'station-start.mp3',
-    'station-end':   'station-end.mp3',
     'warning':       'warning.mp3'
   };
   saveSoundPrefs();
