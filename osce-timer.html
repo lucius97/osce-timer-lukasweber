@@ -763,6 +763,7 @@ async function createSession() {
     document.getElementById('share-code').textContent = sessionCode;
     const link = location.href.split('#')[0] + '#' + sessionCode;
     document.getElementById('share-link').value = link;
+    history.replaceState(null, '', '#' + sessionCode);
     showPage('page-share');
   } catch(e) {
     showPage('page-controller-setup');
@@ -836,7 +837,7 @@ function startObserving() {
 
 function initTimerPage() {
   const cfg = localState.cfg;
-  document.getElementById('timer-session-name').textContent = cfg.name || 'OSCE Timer';
+  document.getElementById('timer-session-name').textContent = (cfg.name || 'OSCE Session') + ' · ' + sessionCode;
   document.getElementById('running-code').textContent  = sessionCode;
   document.getElementById('running-link').value = location.href.split('#')[0] + '#' + sessionCode;
   document.getElementById('obs-code-display').textContent = sessionCode;
@@ -1079,6 +1080,7 @@ function endSession() {
 }
 
 function cancelSession() {
+  if (db && sessionCode) db.ref('sessionIndex/' + sessionCode).remove();
   if (sessionRef) sessionRef.remove();
   clearControllerClaim(sessionCode);
   sessionCode = null; sessionRef = null;
