@@ -643,19 +643,22 @@ function stopPresenceHeartbeat() {
 function watchControllerPresence() {
   if (!sessionRef || isController) return;
 
+  let controllerEverSeen = false;
+
   sessionRef.child('presence').on('value', snap => {
     const data = snap.val();
-    // online===false means Firebase executed the onDisconnect write —
-    // the controller's connection genuinely dropped.
-    // null means presence was never written (session just started).
-    const offline = !data || data.online === false;
     const banner = document.getElementById('ctrl-offline-banner');
     if (!banner) return;
-    if (offline) {
-      banner.style.display = 'flex';
-    } else {
+
+    if (data && data.online === true) {
+      // Controller is confirmed online — record that and hide banner
+      controllerEverSeen = true;
       banner.style.display = 'none';
+    } else if (data && data.online === false && controllerEverSeen) {
+      // Firebase executed the onDisconnect write — controller genuinely dropped
+      banner.style.display = 'flex';
     }
+    // null (never written yet) or false before we ever saw them online → do nothing
   });
 }
 
