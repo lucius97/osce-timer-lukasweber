@@ -494,6 +494,7 @@ To use:
 
   <div class="btn-row" id="ctrl-buttons">
     <button onclick="togglePause()" id="pause-btn">⏸ Pause</button>
+    <button onclick="rollbackPhase()" id="rollback-btn">← Roll back</button>
     <button onclick="skipPhase()" id="skip-btn">Skip phase →</button>
     <button onclick="endSession()">End session</button>
   </div>
@@ -1029,9 +1030,9 @@ function renderTimer() {
     document.getElementById('timer-badge').textContent = 'Waiting';
     document.getElementById('timer-sub').textContent = localState.cfg ? localState.cfg.name || 'OSCE Session' : 'OSCE Session';
     if (isController) {
-      document.getElementById('ctrl-begin').style.display   = 'flex';
-      document.getElementById('ctrl-buttons').style.display = 'none';
-      document.getElementById('retime-card').style.display  = 'none';
+      document.getElementById('ctrl-begin').style.display    = 'flex';
+      document.getElementById('ctrl-buttons').style.display  = 'none';
+      document.getElementById('retime-card').style.display   = 'none';
     }
     return;
   }
@@ -1220,6 +1221,84 @@ function skipPhase() {
   lastSoundKeys = {};
   if (localState.phase === 'break') advanceToStation();
   else advanceToBreakOrEnd();
+}
+
+function rollbackPhase() {
+  if (!isController || !sessionRef || !localState) return;
+  const s = localState;
+  const cfg = s.cfg;
+  const now = Date.now();
+
+  let update;
+
+  if (s.phase === 'station') {
+    // Roll back to the break before this station (same stationIdx)
+    const dur = cfg.breakSecs * 1000;
+    update = {
+      phase: 'break',
+      stationIdx: s.stationIdx,
+      completedStations: Math.max(0, s.stationIdx),
+      phaseStartedAt: now,
+      phaseEndsAt: now + dur,
+      pausedAt: null,
+      totalPausedMs: 0,
+      soundLog: {},
+      ts: now
+    };
+
+  } else if (s.phase === 'break' && s.stationIdx === 0) {
+    // Roll back to waiting (before session began)
+    update = {
+      phase: 'waiting',
+      stationIdx: 0,
+      completedStations: 0,
+      phaseStartedAt: null,
+      phaseEndsAt: null,
+      pausedAt: null,
+      totalPausedMs: 0,
+      soundLog: {},
+      ts: now
+    };
+
+  } else if (s.phase === 'break' && s.stationIdx > 0) {
+    // Roll back to the previous station
+    const prevIdx = s.stationIdx - 1;
+    const dur = cfg.stationSecs * 1000;
+    update = {
+      phase: 'station',
+      stationIdx: prevIdx,
+      completedStations: prevIdx,
+      phaseStartedAt: now,
+      phaseEndsAt: now + dur,
+      pausedAt: null,
+      totalPausedMs: 0,
+      soundLog: {},
+      ts: now
+    };
+
+  } else {
+    return; // nothing to roll back (waiting / ended)
+  }
+
+  advancing = false;
+  cancelScheduledAdvance();
+  lastSoundKeys = {};
+  Object.assign(localState, update);
+  sessionRef.update(update);
+
+  // Update session index
+  if (db && sessionCode) {
+    if (update.phase === 'waiting') {
+      db.ref('sessionIndex/' + sessionCode).update({ phase: 'waiting', stationIdx: 0, updatedAt: now });
+    } else {
+      updateSessionIndex(update.phase, update.stationIdx);
+    }
+  }
+
+  // Seed retime slider to new phase duration
+  const newDurSecs = update.phase === 'break' ? cfg.breakSecs : cfg.stationSecs;
+  const slider = document.getElementById('retime-slider');
+  if (slider) { slider.value = newDurSecs; slider._userTouched = false; updateRetimeLabel(newDurSecs); }
 }
 
 function updateRetimeLabel(val) {
