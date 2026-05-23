@@ -1127,13 +1127,56 @@ function goHome() {
 
 // ── Deep-link (hash = session code) ─────────────────────
 
-function checkHashCode() {
+async function checkHashCode() {
   const hash = location.hash.slice(1).trim().toUpperCase();
-  if (hash.length === 6 && /^[A-Z0-9]+$/.test(hash)) {
-    const homeCode = document.getElementById('home-code');
-    if (homeCode) homeCode.value = hash;
-    joinSessionByCode(hash);
+  if (!(hash.length === 6 && /^[A-Z0-9]+$/.test(hash))) return;
+
+  const homeCode = document.getElementById('home-code');
+  if (homeCode) homeCode.value = hash;
+
+  // If this device created the session, check what state it's in
+  const storedId = getStoredControllerId(hash);
+  if (storedId) {
+    if (!initFirebase()) return;
+    try {
+      const snap = await db.ref('sessions/' + hash).once('value');
+      if (!snap.exists()) {
+        // Session gone — clear claim and stay on home
+        clearControllerClaim(hash);
+        history.replaceState(null, '', location.pathname);
+        return;
+      }
+      const s = snap.val();
+      if (s.controllerToken !== storedId) {
+        // Token mismatch — someone else took over, join as observer
+        joinSessionByCode(hash);
+        return;
+      }
+      // Restore controller state
+      sessionCode  = hash;
+      sessionRef   = db.ref('sessions/' + hash);
+      localState   = s;
+      isController = true;
+      history.replaceState(null, '', '#' + hash);
+
+      if (s.phase === 'waiting') {
+        // Session created but not started yet — restore share page
+        const link = location.href.split('#')[0] + '#' + hash;
+        document.getElementById('share-code').textContent = hash;
+        document.getElementById('share-link').value = link;
+        showPage('page-share');
+      } else {
+        // Session already running — go straight to timer as controller
+        startObserving();
+      }
+    } catch(e) {
+      joinSessionByCode(hash);
+    }
+    return;
   }
+
+  // No stored controller claim — join as observer
+  joinSessionByCode(hash);
 }
 
 function homeJoin() {
