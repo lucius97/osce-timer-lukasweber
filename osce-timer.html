@@ -301,6 +301,24 @@ To use:
     .form-row { grid-template-columns: 1fr; }
     .role-grid { grid-template-columns: 1fr; }
   }
+
+  .session-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 12px; border-radius: var(--radius);
+    border: 0.5px solid var(--border); margin-bottom: 6px;
+    cursor: pointer; transition: background 0.15s;
+    background: var(--surface2);
+  }
+  .session-item:last-child { margin-bottom: 0; }
+  .session-item:hover { background: var(--surface); border-color: var(--teal); }
+  .session-item-info { flex: 1; min-width: 0; }
+  .session-item-name { font-size: 14px; font-weight: 500; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .session-item-meta { font-size: 12px; color: var(--text2); margin-top: 2px; }
+  .session-item-badge { font-size: 11px; font-weight: 500; padding: 3px 8px; border-radius: 100px; white-space: nowrap; }
+  .sib-break  { background: var(--teal-bg);  color: var(--teal-text); }
+  .sib-run    { background: var(--blue-bg);  color: var(--blue-text); }
+  .sib-wait   { background: var(--surface2); color: var(--text2); border: 0.5px solid var(--border2); }
+  .sib-done   { background: var(--amber-bg); color: var(--amber-text); }
 </style>
 </head>
 <body>
@@ -311,20 +329,39 @@ To use:
     <h1>OSCE Timer</h1>
     <p>Synchronized multi-station exam timer</p>
   </div>
-  <div class="role-grid">
-    <div class="role-btn" onclick="showPage('page-controller-setup')">
-      <span class="icon">🎛️</span>
-      <h2>Controller</h2>
-      <p>Configure and run the session. Start, pause, and advance stations.</p>
+
+  <!-- Live session list -->
+  <div id="session-list-card" class="card" style="margin-bottom:1rem;">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+      <h3 style="font-size:13px; color:var(--text2); text-transform:uppercase; letter-spacing:.05em;">Live sessions</h3>
+      <span id="session-list-status" style="font-size:12px; color:var(--text3);">Loading…</span>
     </div>
-    <div class="role-btn" onclick="showPage('page-observer-join')">
-      <span class="icon">👁️</span>
-      <h2>Observer</h2>
-      <p>Join an existing session with a 6-digit code. View-only.</p>
+    <div id="session-list-items">
+      <!-- populated by JS -->
+    </div>
+    <div id="session-list-empty" style="display:none; text-align:center; padding:1rem 0; font-size:13px; color:var(--text3);">
+      No active sessions found
     </div>
   </div>
-  <p style="font-size:12px; color:var(--text3); text-align:center; margin-top:1.25rem;">
-    Requires internet connection — state syncs via Firebase in real time.
+
+  <!-- Manual code entry -->
+  <div class="card-secondary" style="margin-bottom:1rem;">
+    <h3 style="font-size:13px; color:var(--text2); text-transform:uppercase; letter-spacing:.05em; margin-bottom:10px;">Join by code</h3>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <input type="text" id="home-code" maxlength="6" placeholder="XXXXXX"
+        style="font-size:20px; text-align:center; letter-spacing:5px; font-family:monospace; text-transform:uppercase; flex:1;"
+        oninput="this.value=this.value.toUpperCase().replace(/[^A-Z0-9]/g,'')"
+        onkeydown="if(event.key==='Enter') homeJoin()" />
+      <button class="primary" onclick="homeJoin()" style="white-space:nowrap;">Join →</button>
+    </div>
+    <div id="home-join-error" class="error-msg" style="margin-top:8px;"></div>
+  </div>
+
+  <div class="btn-row">
+    <button class="primary" onclick="showPage('page-controller-setup')">🎛️ New session</button>
+  </div>
+  <p style="font-size:12px; color:var(--text3); text-align:center; margin-top:1rem;">
+    Requires internet — syncs via Firebase in real time.
   </p>
 </div>
 
@@ -383,26 +420,7 @@ To use:
   </div>
 </div>
 
-<!-- PAGE: Observer join -->
-<div id="page-observer-join" class="page">
-  <div class="page-header">
-    <h1>Join session</h1>
-    <p>Enter the 6-digit code shown on the controller screen.</p>
-  </div>
-  <div class="card">
-    <div class="form-group">
-      <label>Session code</label>
-      <input type="text" id="join-code" maxlength="6" placeholder="000000"
-        style="font-size:24px; text-align:center; letter-spacing:6px; font-family:monospace; text-transform:uppercase"
-        oninput="this.value=this.value.toUpperCase().replace(/[^A-Z0-9]/g,'')" />
-    </div>
-    <div id="join-error" class="error-msg"></div>
-    <div class="btn-row" style="justify-content:flex-end; margin-top:.5rem;">
-      <button onclick="showPage('page-home')">← Back</button>
-      <button class="primary" onclick="joinSession()">Join →</button>
-    </div>
-  </div>
-</div>
+<!-- page-observer-join removed: joining is now on home page -->
 
 <!-- PAGE: Connecting spinner -->
 <div id="page-connecting" class="page">
@@ -472,6 +490,9 @@ To use:
     <button onclick="skipPhase()" id="skip-btn">Skip phase →</button>
     <button onclick="endSession()">End session</button>
   </div>
+  <div class="btn-row" id="obs-buttons" style="display:none;">
+    <button onclick="goHome()">← Leave session</button>
+  </div>
 
   <div class="card-secondary" id="ctrl-share-card" style="margin-top:1rem;">
     <p style="font-size:12px; color:var(--text2); margin-bottom:8px;">
@@ -491,7 +512,7 @@ To use:
     <p id="ended-msg">All stations finished.</p>
   </div>
   <div class="btn-row">
-    <button class="primary" onclick="showPage('page-home'); location.hash='';">← Home</button>
+    <button class="primary" onclick="goHome()">← Home</button>
   </div>
 </div>
 
@@ -738,42 +759,12 @@ async function createSession() {
 
 // ── Join session (observer) ──────────────────────────────
 
-async function joinSession() {
-  hideError('join-error');
+// Thin wrapper kept for the back button on page-observer-join
+function joinSession() {
   const code = document.getElementById('join-code').value.trim().toUpperCase();
   if (code.length !== 6) { showError('join-error', 'Please enter a 6-character session code.'); return; }
-
-  if (!initFirebase()) return;
-
-  showPage('page-connecting');
-  document.getElementById('connecting-msg').textContent = 'Joining session ' + code + '…';
-
-  const ref = db.ref('sessions/' + code);
-  try {
-    const snap = await ref.once('value');
-    if (!snap.exists()) {
-      showPage('page-observer-join');
-      showError('join-error', 'Session not found. Check the code and try again.');
-      return;
-    }
-
-    sessionCode = code;
-    sessionRef  = ref;
-    localState  = snap.val();
-
-    // Check if this device is actually the controller (e.g. after a refresh)
-    const storedId = getStoredControllerId(code);
-    if (storedId && localState.controllerToken && storedId === localState.controllerToken) {
-      isController = true;
-    } else {
-      isController = false;
-    }
-
-    startObserving();
-  } catch(e) {
-    showPage('page-observer-join');
-    showError('join-error', 'Connection error: ' + e.message);
-  }
+  history.replaceState(null, '', '#' + code);
+  joinSessionByCode(code);
 }
 
 // ── Start / observe ──────────────────────────────────────
@@ -838,10 +829,12 @@ function initTimerPage() {
     document.getElementById('ctrl-share-card').style.display = 'block';
     document.getElementById('observer-banner').style.display  = 'none';
     document.getElementById('ctrl-offline-banner').style.display = 'none';
+    document.getElementById('obs-buttons').style.display           = 'none';
   } else {
     document.getElementById('ctrl-buttons').style.display    = 'none';
     document.getElementById('ctrl-share-card').style.display = 'none';
     document.getElementById('observer-banner').style.display  = 'flex';
+    document.getElementById('obs-buttons').style.display      = 'flex';
   }
 
   buildDots();
@@ -1054,6 +1047,7 @@ function cancelSession() {
   if (sessionRef) sessionRef.remove();
   clearControllerClaim(sessionCode);
   sessionCode = null; sessionRef = null;
+  history.replaceState(null, '', location.pathname);
   showPage('page-controller-setup');
 }
 
@@ -1074,23 +1068,155 @@ function copyRunningLink() {
   });
 }
 
+// ── Clean navigation home ────────────────────────────────
+
+function goHome() {
+  // Tear down any active session listeners and timers
+  clearInterval(ticker);
+  ticker = null;
+  if (sessionRef) { sessionRef.off(); sessionRef = null; }
+  advancing = false;
+  localState = null;
+  sessionCode = null;
+  isController = false;
+  lastSoundKeys = {};
+  // Clear URL code
+  history.replaceState(null, '', location.pathname);
+  // Restart session list
+  stopSessionList();
+  if (initFirebase()) startSessionList();
+  showPage('page-home');
+}
+
 // ── Deep-link (hash = session code) ─────────────────────
 
 function checkHashCode() {
   const hash = location.hash.slice(1).trim().toUpperCase();
   if (hash.length === 6 && /^[A-Z0-9]+$/.test(hash)) {
-    document.getElementById('join-code').value = hash;
-    // Auto-try to restore controller role if this device created it
-    const storedId = getStoredControllerId(hash);
-    if (storedId) {
-      // Will be verified against Firebase after join
-    }
-    showPage('page-observer-join');
-    joinSession();
+    const homeCode = document.getElementById('home-code');
+    if (homeCode) homeCode.value = hash;
+    joinSessionByCode(hash);
   }
 }
 
-window.addEventListener('load', () => { initFirebase(); checkHashCode(); });
+function homeJoin() {
+  const code = document.getElementById('home-code').value.trim().toUpperCase();
+  hideError('home-join-error');
+  if (code.length !== 6) { showError('home-join-error', 'Please enter a 6-character code.'); return; }
+  // Update URL hash so the code persists in the link
+  history.replaceState(null, '', '#' + code);
+  joinSessionByCode(code);
+}
+
+// Shared join logic used by homeJoin, checkHashCode, and session-list taps
+async function joinSessionByCode(code) {
+  hideError('home-join-error');
+  hideError('join-error');
+  if (!initFirebase()) return;
+
+  showPage('page-connecting');
+  document.getElementById('connecting-msg').textContent = 'Joining session ' + code + '…';
+
+  const ref = db.ref('sessions/' + code);
+  try {
+    const snap = await ref.once('value');
+    if (!snap.exists()) {
+      showPage('page-home');
+      showError('home-join-error', 'Session "' + code + '" not found. Check the code and try again.');
+      history.replaceState(null, '', location.pathname);
+      return;
+    }
+    sessionCode = code;
+    sessionRef  = ref;
+    localState  = snap.val();
+
+    // Restore controller role if this device created the session
+    const storedId = getStoredControllerId(code);
+    isController = !!(storedId && localState.controllerToken && storedId === localState.controllerToken);
+
+    // Keep the code in the URL
+    history.replaceState(null, '', '#' + code);
+    startObserving();
+  } catch(e) {
+    showPage('page-home');
+    showError('home-join-error', 'Connection error: ' + e.message);
+  }
+}
+
+// ── Session list ──────────────────────────────────────────────────────────
+
+let sessionListRef = null;
+
+function startSessionList() {
+  if (!db) return;
+  sessionListRef = db.ref('sessions');
+
+  sessionListRef.on('value', snap => {
+    const items = document.getElementById('session-list-items');
+    const empty = document.getElementById('session-list-empty');
+    const status = document.getElementById('session-list-status');
+    items.innerHTML = '';
+
+    if (!snap.exists()) {
+      empty.style.display = 'block';
+      status.textContent = 'Live';
+      return;
+    }
+
+    const sessions = snap.val();
+    const codes = Object.keys(sessions).filter(k => {
+      const s = sessions[k];
+      return s && s.cfg && s.phase !== 'ended';
+    });
+
+    status.textContent = 'Live · ' + codes.length + ' session' + (codes.length !== 1 ? 's' : '');
+
+    if (codes.length === 0) {
+      empty.style.display = 'block';
+      return;
+    }
+    empty.style.display = 'none';
+
+    codes.forEach(code => {
+      const s = sessions[code];
+      const cfg = s.cfg || {};
+      const phase = s.phase || 'waiting';
+
+      let badgeClass = 'sib-wait', badgeText = 'Waiting';
+      if (phase === 'break')   { badgeClass = 'sib-break'; badgeText = 'Break'; }
+      if (phase === 'station') { badgeClass = 'sib-run';   badgeText = 'Running'; }
+      if (phase === 'ended')   { badgeClass = 'sib-done';  badgeText = 'Ended'; }
+
+      const stationInfo = phase === 'station' || phase === 'break'
+        ? 'Station ' + (s.stationIdx + 1) + ' of ' + cfg.stations
+        : cfg.stations + ' stations · ' + (cfg.stationSecs / 60) + ' min each';
+
+      const div = document.createElement('div');
+      div.className = 'session-item';
+      div.innerHTML = `
+        <div class="session-item-info">
+          <div class="session-item-name">${cfg.name || 'OSCE Session'}</div>
+          <div class="session-item-meta">${stationInfo} &nbsp;·&nbsp; Code: <strong>${code}</strong></div>
+        </div>
+        <span class="session-item-badge ${badgeClass}">${badgeText}</span>
+      `;
+      div.onclick = () => {
+        history.replaceState(null, '', '#' + code);
+        joinSessionByCode(code);
+      };
+      items.appendChild(div);
+    });
+  });
+}
+
+function stopSessionList() {
+  if (sessionListRef) { sessionListRef.off(); sessionListRef = null; }
+}
+
+window.addEventListener('load', () => {
+  if (initFirebase()) startSessionList();
+  checkHashCode();
+});
 window.addEventListener('hashchange', checkHashCode);
 </script>
 </body>
