@@ -48,6 +48,7 @@ To use:
 <title>OSCE Timer</title>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+<script src="config.js"></script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -490,15 +491,9 @@ To use:
 </div>
 
 <script>
-const FIREBASE_CONFIG = {
-  apiKey: "AIzaSyC5KlsWCwAczskZz8_UVjkB_GVo4VMfyBI",
-  authDomain: "osce-timer-zh.firebaseapp.com",
-  databaseURL: "https://osce-timer-zh-default-rtdb.europe-west1.firebasedatabase.app",
-  projectId: "osce-timer-zh",
-  storageBucket: "osce-timer-zh.firebasestorage.app",
-  messagingSenderId: "153602333848",
-  appId: "1:153602333848:web:e8a7bbe12a0ad9588e04ed"
-};
+const FIREBASE_CONFIG = (typeof __OSCE_FIREBASE_CONFIG !== 'undefined')
+  ? __OSCE_FIREBASE_CONFIG
+  : null;
 
 let db = null;
 let sessionRef = null;
@@ -512,6 +507,10 @@ let audioReady = false;
 
 function initFirebase() {
   if (db) return;
+  if (!FIREBASE_CONFIG) {
+    alert('Firebase config not found. Make sure config.js is in the same folder and contains your __OSCE_FIREBASE_CONFIG values. See setup instructions at top of osce-timer.html.');
+    return;
+  }
   try {
     if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
     db = firebase.database();
