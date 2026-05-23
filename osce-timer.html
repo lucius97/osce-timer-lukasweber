@@ -1,0 +1,995 @@
+<!--
+=============================================================
+  OSCE TIMER — SETUP (takes ~5 minutes, free)
+=============================================================
+
+This file uses Firebase Realtime Database for live sync.
+You need a free Firebase project. Here's how:
+
+1. Go to https://console.firebase.google.com
+2. Click "Add project" → name it (e.g. "osce-timer") → Continue
+3. Disable Google Analytics if you like → Create project
+4. In the left sidebar: Build → Realtime Database → Create database
+   → Choose a region → Start in TEST MODE (allows read/write for 30 days;
+     enough for exams — you can extend later)
+5. In the left sidebar: Project settings (gear icon) → General
+   → Scroll to "Your apps" → click </> (Web)
+   → Register app (any nickname) → you'll see a firebaseConfig block like:
+
+     const firebaseConfig = {
+       apiKey: "AIza...",
+       authDomain: "your-project.firebaseapp.com",
+       databaseURL: "https://your-project-default-rtdb.firebaseio.com",
+       projectId: "your-project",
+       storageBucket: "your-project.appspot.com",
+       messagingSenderId: "123456789",
+       appId: "1:123456789:web:abcdef"
+     };
+
+6. In THIS FILE, find the line:
+     const FIREBASE_CONFIG = {
+   and replace ALL the values inside with the ones from step 5.
+
+7. Save the file. Open it in any browser. Done!
+
+To use:
+- Controller: opens the file, clicks "Controller", configures, clicks "Create session"
+- Observers: open the same file in any browser on any device,
+  click "Observer", enter the 6-digit code shown on the controller screen
+- All screens sync in real time via Firebase WebSocket connection
+
+=============================================================
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>OSCE Timer</title>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #f8f8f6;
+    --surface: #ffffff;
+    --surface2: #f1f0ec;
+    --border: rgba(0,0,0,0.10);
+    --border2: rgba(0,0,0,0.18);
+    --text: #1a1a18;
+    --text2: #6b6b67;
+    --text3: #9a9a96;
+    --teal: #1D9E75;
+    --teal-bg: #E1F5EE;
+    --teal-text: #085041;
+    --amber: #BA7517;
+    --amber-bg: #FAEEDA;
+    --amber-text: #633806;
+    --red: #E24B4A;
+    --red-bg: #FCEBEB;
+    --red-text: #501313;
+    --blue: #185FA5;
+    --blue-bg: #E6F1FB;
+    --blue-text: #042C53;
+    --radius: 10px;
+    --radius-lg: 14px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1a1a18;
+      --surface: #242422;
+      --surface2: #2e2e2b;
+      --border: rgba(255,255,255,0.10);
+      --border2: rgba(255,255,255,0.18);
+      --text: #f0efe8;
+      --text2: #a0a09a;
+      --text3: #6a6a65;
+      --teal-bg: #085041;
+      --teal-text: #9FE1CB;
+      --amber-bg: #633806;
+      --amber-text: #FAC775;
+      --red-bg: #501313;
+      --red-text: #F09595;
+      --blue-bg: #042C53;
+      --blue-text: #B5D4F4;
+    }
+  }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 2rem 1rem 3rem;
+  }
+
+  h1 { font-size: 22px; font-weight: 500; }
+  h2 { font-size: 17px; font-weight: 500; }
+  h3 { font-size: 14px; font-weight: 500; }
+
+  .page { display: none; width: 100%; max-width: 560px; }
+  .page.active { display: block; }
+
+  .card {
+    background: var(--surface);
+    border: 0.5px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 1.25rem 1.5rem;
+    margin-bottom: 1rem;
+  }
+
+  .card-secondary {
+    background: var(--surface2);
+    border: 0.5px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 1.25rem 1.5rem;
+    margin-bottom: 1rem;
+  }
+
+  .page-header { text-align: center; margin-bottom: 1.75rem; }
+  .page-header h1 { margin-bottom: 4px; }
+  .page-header p { font-size: 14px; color: var(--text2); }
+
+  .role-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 0; }
+  .role-btn {
+    background: var(--surface);
+    border: 0.5px solid var(--border2);
+    border-radius: var(--radius-lg);
+    padding: 1.5rem 1rem;
+    cursor: pointer;
+    text-align: center;
+    transition: border-color 0.15s, background 0.15s;
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+  }
+  .role-btn:hover { background: var(--surface2); border-color: var(--teal); }
+  .role-btn .icon { font-size: 28px; }
+  .role-btn h2 { font-size: 15px; }
+  .role-btn p { font-size: 12px; color: var(--text2); line-height: 1.5; }
+
+  label { font-size: 13px; color: var(--text2); display: block; margin-bottom: 5px; }
+  input[type=text], input[type=number] {
+    width: 100%; padding: 9px 12px; font-size: 15px;
+    border: 0.5px solid var(--border2); border-radius: var(--radius);
+    background: var(--surface); color: var(--text);
+    outline: none; transition: border-color 0.15s;
+  }
+  input[type=text]:focus, input[type=number]:focus { border-color: var(--teal); }
+
+  .slider-row { display: flex; align-items: center; gap: 10px; }
+  input[type=range] {
+    flex: 1; height: 4px; accent-color: var(--teal);
+    -webkit-appearance: none; appearance: none;
+    background: var(--border2); border-radius: 2px; outline: none; cursor: pointer;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 18px; height: 18px;
+    border-radius: 50%; background: var(--teal); cursor: pointer;
+  }
+  .slider-val { font-size: 13px; color: var(--text2); min-width: 56px; text-align: right; }
+
+  .form-group { margin-bottom: 1rem; }
+  .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 1rem; }
+
+  button {
+    font-size: 14px; padding: 10px 20px;
+    border-radius: var(--radius); border: 0.5px solid var(--border2);
+    background: var(--surface); color: var(--text);
+    cursor: pointer; display: inline-flex; align-items: center; gap: 7px;
+    transition: background 0.15s, border-color 0.15s; font-family: inherit;
+  }
+  button:hover { background: var(--surface2); }
+  button:active { transform: scale(0.98); }
+  button.primary {
+    background: var(--text); color: var(--surface);
+    border-color: transparent; font-weight: 500;
+  }
+  button.primary:hover { opacity: 0.85; }
+  button:disabled { opacity: 0.35; cursor: not-allowed; }
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 12px; font-weight: 500; padding: 4px 10px;
+    border-radius: 100px;
+  }
+  .badge-teal { background: var(--teal-bg); color: var(--teal-text); }
+  .badge-amber { background: var(--amber-bg); color: var(--amber-text); }
+  .badge-red { background: var(--red-bg); color: var(--red-text); }
+  .badge-blue { background: var(--blue-bg); color: var(--blue-text); }
+  .badge-gray { background: var(--surface2); color: var(--text2); }
+
+  .timer-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 1.25rem; flex-wrap: wrap; gap: 10px;
+  }
+  .timer-header-left h1 { font-size: 18px; }
+  .timer-header-left p { font-size: 13px; color: var(--text2); margin-top: 2px; }
+
+  .dot-row {
+    display: flex; gap: 8px; justify-content: center;
+    flex-wrap: wrap; margin-bottom: 1rem;
+  }
+  .dot {
+    width: 32px; height: 32px; border-radius: 50%;
+    border: 0.5px solid var(--border2);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 500; color: var(--text2);
+    transition: background 0.3s, color 0.3s;
+  }
+  .dot.done { background: var(--teal-bg); border-color: var(--teal); color: var(--teal-text); }
+  .dot.active { background: var(--text); border-color: var(--text); color: var(--surface); }
+  .dot.on-break { background: var(--amber-bg); border-color: var(--amber); color: var(--amber-text); }
+
+  .clock-card {
+    background: var(--surface); border: 0.5px solid var(--border);
+    border-radius: var(--radius-lg); padding: 2rem 1.5rem;
+    text-align: center; margin-bottom: 1rem;
+  }
+  .phase-tag {
+    font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--text3); margin-bottom: 6px;
+  }
+  .station-name { font-size: 16px; font-weight: 500; color: var(--text); margin-bottom: 12px; }
+  .big-time {
+    font-size: 80px; font-weight: 500; letter-spacing: -3px;
+    font-variant-numeric: tabular-nums; line-height: 1;
+    color: var(--text); transition: color 0.3s;
+  }
+  .big-time.teal  { color: var(--teal); }
+  .big-time.amber { color: var(--amber); }
+  .big-time.red   { color: var(--red); }
+
+  .prog-wrap {
+    width: 100%; height: 6px; background: var(--surface2);
+    border-radius: 100px; margin-top: 1.25rem; overflow: hidden;
+  }
+  .prog-fill {
+    height: 100%; border-radius: 100px; background: var(--teal);
+    transition: width 0.9s linear, background 0.3s;
+  }
+  .prog-fill.amber { background: var(--amber); }
+  .prog-fill.red   { background: var(--red); }
+
+  .observer-banner {
+    background: var(--blue-bg); border: 0.5px solid rgba(24,95,165,0.25);
+    border-radius: var(--radius); padding: 10px 14px; margin-bottom: 1rem;
+    font-size: 13px; color: var(--blue-text);
+    display: flex; align-items: center; gap: 8px;
+  }
+
+  .code-display {
+    font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+    font-size: 32px; font-weight: 500; letter-spacing: 6px;
+    color: var(--text); text-align: center; padding: 1rem;
+    background: var(--surface2); border-radius: var(--radius);
+    margin: 0.5rem 0 1rem;
+  }
+
+  .copy-row { display: flex; gap: 8px; align-items: center; }
+  .copy-row input {
+    flex: 1; font-size: 12px; font-family: monospace;
+    padding: 7px 10px; background: var(--surface2); color: var(--text2);
+  }
+
+  .sep { height: 0.5px; background: var(--border); margin: 1rem 0; }
+
+  .pulse { animation: pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+  .connecting { text-align: center; padding: 3rem 1rem; color: var(--text2); font-size: 15px; }
+  .connecting .spinner {
+    width: 32px; height: 32px; border: 2px solid var(--border2);
+    border-top-color: var(--teal); border-radius: 50%;
+    animation: spin 0.8s linear infinite; margin: 0 auto 1rem;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .error-msg {
+    background: var(--red-bg); color: var(--red-text);
+    border-radius: var(--radius); padding: 10px 14px;
+    font-size: 13px; margin-bottom: 1rem; display: none;
+  }
+
+  @media (max-width: 480px) {
+    .big-time { font-size: 60px; }
+    .form-row { grid-template-columns: 1fr; }
+    .role-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<!-- PAGE: Home / role select -->
+<div id="page-home" class="page active">
+  <div class="page-header">
+    <h1>OSCE Timer</h1>
+    <p>Synchronized multi-station exam timer</p>
+  </div>
+  <div class="role-grid">
+    <div class="role-btn" onclick="showPage('page-controller-setup')">
+      <span class="icon">🎛️</span>
+      <h2>Controller</h2>
+      <p>Configure and run the session. Start, pause, and advance stations.</p>
+    </div>
+    <div class="role-btn" onclick="showPage('page-observer-join')">
+      <span class="icon">👁️</span>
+      <h2>Observer</h2>
+      <p>Join an existing session with a 6-digit code. View-only.</p>
+    </div>
+  </div>
+  <p style="font-size:12px; color:var(--text3); text-align:center; margin-top:1.25rem;">
+    Requires internet connection — state syncs via Firebase in real time.
+  </p>
+</div>
+
+<!-- PAGE: Controller setup -->
+<div id="page-controller-setup" class="page">
+  <div class="page-header">
+    <h1>New session</h1>
+    <p>Configure your OSCE, then share the session code with observers.</p>
+  </div>
+  <div class="card-secondary">
+    <h3 style="margin-bottom:1rem; color:var(--text2); text-transform:uppercase; font-size:12px; letter-spacing:.06em;">Session settings</h3>
+
+    <div class="form-row">
+      <div class="form-group" style="margin-bottom:0">
+        <label>Stations</label>
+        <input type="number" id="cfg-stations" min="2" max="12" value="5" />
+      </div>
+      <div class="form-group" style="margin-bottom:0">
+        <label>Session name (optional)</label>
+        <input type="text" id="cfg-name" placeholder="e.g. OSCE Block A" maxlength="40" />
+      </div>
+    </div>
+
+    <div class="sep"></div>
+
+    <div class="form-group">
+      <label>Station duration</label>
+      <div class="slider-row">
+        <input type="range" id="cfg-min" min="1" max="20" value="8" step="1" oninput="document.getElementById('cfg-min-out').textContent=this.value+' min'" />
+        <span class="slider-val" id="cfg-min-out">8 min</span>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>Break duration (before each station)</label>
+      <div class="slider-row">
+        <input type="range" id="cfg-break" min="30" max="300" value="60" step="10" oninput="document.getElementById('cfg-break-out').textContent=this.value+' s'" />
+        <span class="slider-val" id="cfg-break-out">60 s</span>
+      </div>
+    </div>
+
+    <div class="form-group" style="margin-bottom:0">
+      <label>Warning threshold (during station)</label>
+      <div class="slider-row">
+        <input type="range" id="cfg-warn" min="30" max="180" value="60" step="10" oninput="document.getElementById('cfg-warn-out').textContent=this.value+' s'" />
+        <span class="slider-val" id="cfg-warn-out">60 s</span>
+      </div>
+    </div>
+  </div>
+
+  <div id="setup-error" class="error-msg"></div>
+
+  <div class="btn-row">
+    <button onclick="showPage('page-home')">← Back</button>
+    <button class="primary" onclick="createSession()">Create session →</button>
+  </div>
+</div>
+
+<!-- PAGE: Observer join -->
+<div id="page-observer-join" class="page">
+  <div class="page-header">
+    <h1>Join session</h1>
+    <p>Enter the 6-digit code shown on the controller screen.</p>
+  </div>
+  <div class="card">
+    <div class="form-group">
+      <label>Session code</label>
+      <input type="text" id="join-code" maxlength="6" placeholder="000000"
+        style="font-size:24px; text-align:center; letter-spacing:6px; font-family:monospace; text-transform:uppercase"
+        oninput="this.value=this.value.toUpperCase().replace(/[^A-Z0-9]/g,'')" />
+    </div>
+    <div id="join-error" class="error-msg"></div>
+    <div class="btn-row" style="justify-content:flex-end; margin-top:.5rem;">
+      <button onclick="showPage('page-home')">← Back</button>
+      <button class="primary" onclick="joinSession()">Join →</button>
+    </div>
+  </div>
+</div>
+
+<!-- PAGE: Connecting spinner -->
+<div id="page-connecting" class="page">
+  <div class="connecting">
+    <div class="spinner"></div>
+    <p id="connecting-msg">Connecting…</p>
+  </div>
+</div>
+
+<!-- PAGE: Controller — share code -->
+<div id="page-share" class="page">
+  <div class="page-header">
+    <h1>Session ready</h1>
+    <p>Share this code with all observer screens, then start when ready.</p>
+  </div>
+  <div class="card" style="text-align:center;">
+    <p style="font-size:13px; color:var(--text2); margin-bottom:4px;">Session code</p>
+    <div class="code-display" id="share-code">------</div>
+    <p style="font-size:12px; color:var(--text3);">Observers open this page in any browser and enter the code above.</p>
+  </div>
+
+  <div class="card-secondary">
+    <h3 style="font-size:13px; color:var(--text2); margin-bottom:8px;">Or share the direct link</h3>
+    <div class="copy-row">
+      <input type="text" id="share-link" readonly />
+      <button onclick="copyLink()">Copy</button>
+    </div>
+  </div>
+
+  <div class="btn-row" style="margin-top:.5rem;">
+    <button onclick="cancelSession()">Cancel</button>
+    <button class="primary" onclick="startSession()">Start session →</button>
+  </div>
+</div>
+
+<!-- PAGE: Timer (shared by controller + observer) -->
+<div id="page-timer" class="page">
+  <div class="timer-header">
+    <div class="timer-header-left">
+      <h1 id="timer-session-name">OSCE Timer</h1>
+      <p id="timer-sub">Initialising…</p>
+    </div>
+    <span class="badge badge-gray" id="timer-badge">–</span>
+  </div>
+
+  <div id="observer-banner" class="observer-banner" style="display:none;">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+    Observer mode — view only. Code: <strong id="obs-code-display">–</strong>
+  </div>
+
+  <div class="dot-row" id="dot-row"></div>
+
+  <div class="clock-card">
+    <div class="phase-tag" id="phase-tag">BREAK</div>
+    <div class="station-name" id="station-name">Opening break</div>
+    <div class="big-time teal" id="big-time">01:00</div>
+    <div class="prog-wrap"><div class="prog-fill" id="prog-fill" style="width:100%"></div></div>
+  </div>
+
+  <div class="btn-row" id="ctrl-buttons">
+    <button onclick="togglePause()" id="pause-btn">⏸ Pause</button>
+    <button onclick="skipPhase()" id="skip-btn">Skip phase →</button>
+    <button onclick="endSession()">End session</button>
+  </div>
+
+  <div class="card-secondary" id="ctrl-share-card" style="margin-top:1rem;">
+    <p style="font-size:12px; color:var(--text2); margin-bottom:8px;">
+      Session code: <strong id="running-code">–</strong> &nbsp;·&nbsp; Share link:
+    </p>
+    <div class="copy-row">
+      <input type="text" id="running-link" readonly style="font-size:12px;" />
+      <button onclick="copyRunningLink()" style="font-size:12px; padding:7px 12px;">Copy</button>
+    </div>
+  </div>
+</div>
+
+<!-- PAGE: Session ended -->
+<div id="page-ended" class="page">
+  <div class="page-header" style="padding-top:2rem;">
+    <h1>Session complete</h1>
+    <p id="ended-msg">All stations finished.</p>
+  </div>
+  <div class="btn-row">
+    <button class="primary" onclick="showPage('page-home'); location.hash='';">← Home</button>
+  </div>
+</div>
+
+<script>
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyC5KlsWCwAczskZz8_UVjkB_GVo4VMfyBI",
+  authDomain: "osce-timer-zh.firebaseapp.com",
+  databaseURL: "https://osce-timer-zh-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "osce-timer-zh",
+  storageBucket: "osce-timer-zh.firebasestorage.app",
+  messagingSenderId: "153602333848",
+  appId: "1:153602333848:web:e8a7bbe12a0ad9588e04ed"
+};
+
+let db = null;
+let sessionRef = null;
+let sessionCode = null;
+let isController = false;
+let localState = null;
+let ticker = null;
+let lastSoundKeys = {};
+let audioCtx = null;
+let audioReady = false;
+
+function initFirebase() {
+  if (db) return;
+  try {
+    if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+    db = firebase.database();
+  } catch(e) {
+    console.error('Firebase init failed:', e);
+  }
+}
+
+document.addEventListener('click', unlockAudio, { once: true });
+document.addEventListener('touchstart', unlockAudio, { once: true });
+
+function unlockAudio() {
+  if (audioReady) return;
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    audioReady = true;
+  } catch(e) {}
+}
+
+function tone(freq, dur, vol=0.38, delay=0) {
+  if (!audioCtx) return;
+  try {
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.connect(g); g.connect(audioCtx.destination);
+    o.type = 'sine';
+    o.frequency.setValueAtTime(freq, audioCtx.currentTime + delay);
+    g.gain.setValueAtTime(0, audioCtx.currentTime + delay);
+    g.gain.linearRampToValueAtTime(vol, audioCtx.currentTime + delay + 0.02);
+    g.gain.setValueAtTime(vol, audioCtx.currentTime + delay + dur - 0.05);
+    g.gain.linearRampToValueAtTime(0, audioCtx.currentTime + delay + dur);
+    o.start(audioCtx.currentTime + delay);
+    o.stop(audioCtx.currentTime + delay + dur);
+  } catch(e) {}
+}
+
+function playTwoToneStart() {
+  tone(660, 0.18, 0.4, 0);
+  tone(880, 0.22, 0.4, 0.22);
+}
+function playOneMinWarn() {
+  tone(520, 0.14, 0.38, 0);
+  tone(520, 0.14, 0.38, 0.22);
+  tone(520, 0.14, 0.38, 0.44);
+}
+function playStationEnd() {
+  tone(880, 0.1, 0.44, 0);
+  tone(880, 0.1, 0.44, 0.14);
+  tone(660, 0.1, 0.44, 0.28);
+  tone(440, 0.35, 0.44, 0.42);
+}
+function playBreakWarn() {
+  tone(660, 0.18, 0.35, 0);
+  tone(880, 0.22, 0.35, 0.22);
+}
+
+function showPage(id) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+}
+
+function generateCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
+  return code;
+}
+
+function showError(id, msg) {
+  const el = document.getElementById(id);
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+function hideError(id) {
+  const el = document.getElementById(id);
+  if (el) el.style.display = 'none';
+}
+
+async function createSession() {
+  hideError('setup-error');
+  initFirebase();
+  if (!db) { showError('setup-error', 'Could not connect to sync service. Check your internet connection.'); return; }
+
+  const stations = Math.max(2, Math.min(12, parseInt(document.getElementById('cfg-stations').value) || 5));
+  const stationSecs = (parseInt(document.getElementById('cfg-min').value) || 8) * 60;
+  const breakSecs = parseInt(document.getElementById('cfg-break').value) || 60;
+  const warnSecs = parseInt(document.getElementById('cfg-warn').value) || 60;
+  const name = document.getElementById('cfg-name').value.trim() || 'OSCE Session';
+
+  sessionCode = generateCode();
+  sessionRef = db.ref('sessions/' + sessionCode);
+
+  const initState = {
+    cfg: { stations, stationSecs, breakSecs, warnSecs, name },
+    phase: 'waiting',
+    stationIdx: 0,
+    completedStations: 0,
+    phaseStartedAt: null,
+    pausedAt: null,
+    totalPausedMs: 0,
+    soundLog: {},
+    ts: Date.now()
+  };
+
+  showPage('page-connecting');
+  document.getElementById('connecting-msg').textContent = 'Creating session…';
+
+  try {
+    await sessionRef.set(initState);
+    await sessionRef.onDisconnect().remove();
+    isController = true;
+    localState = initState;
+
+    document.getElementById('share-code').textContent = sessionCode;
+    const link = location.href.split('#')[0] + '#' + sessionCode;
+    document.getElementById('share-link').value = link;
+    showPage('page-share');
+  } catch(e) {
+    showPage('page-controller-setup');
+    showError('setup-error', 'Failed to create session: ' + e.message);
+  }
+}
+
+async function joinSession() {
+  hideError('join-error');
+  const code = document.getElementById('join-code').value.trim().toUpperCase();
+  if (code.length !== 6) { showError('join-error', 'Please enter a 6-character session code.'); return; }
+
+  initFirebase();
+  if (!db) { showError('join-error', 'Could not connect. Check your internet connection.'); return; }
+
+  showPage('page-connecting');
+  document.getElementById('connecting-msg').textContent = 'Joining session ' + code + '…';
+
+  const ref = db.ref('sessions/' + code);
+  try {
+    const snap = await ref.once('value');
+    if (!snap.exists()) {
+      showPage('page-observer-join');
+      showError('join-error', 'Session not found. Check the code and try again.');
+      return;
+    }
+    sessionCode = code;
+    sessionRef = ref;
+    isController = false;
+    localState = snap.val();
+    startObserving();
+  } catch(e) {
+    showPage('page-observer-join');
+    showError('join-error', 'Connection error: ' + e.message);
+  }
+}
+
+function startSession() {
+  if (!sessionRef || !isController) return;
+  const now = Date.now();
+  const update = {
+    phase: 'break',
+    stationIdx: 0,
+    completedStations: 0,
+    phaseStartedAt: now,
+    pausedAt: null,
+    totalPausedMs: 0,
+    soundLog: {},
+    ts: now
+  };
+  Object.assign(localState, update);
+  sessionRef.update(update);
+  initTimerPage();
+}
+
+function startObserving() {
+  initTimerPage();
+  sessionRef.on('value', snap => {
+    if (!snap.exists()) {
+      clearInterval(ticker);
+      showPage('page-ended');
+      document.getElementById('ended-msg').textContent = 'The controller ended the session.';
+      return;
+    }
+    const prev = localState ? localState.phase + '_' + localState.stationIdx : '';
+    localState = snap.val();
+    const next = localState.phase + '_' + localState.stationIdx;
+    if (prev !== next) lastSoundKeys = {};
+    renderTimer();
+  });
+}
+
+function initTimerPage() {
+  const cfg = localState.cfg;
+
+  document.getElementById('timer-session-name').textContent = cfg.name || 'OSCE Timer';
+  document.getElementById('running-code').textContent = sessionCode;
+  document.getElementById('running-link').value = location.href.split('#')[0] + '#' + sessionCode;
+  document.getElementById('obs-code-display').textContent = sessionCode;
+
+  if (isController) {
+    document.getElementById('ctrl-buttons').style.display = 'flex';
+    document.getElementById('ctrl-share-card').style.display = 'block';
+    document.getElementById('observer-banner').style.display = 'none';
+  } else {
+    document.getElementById('ctrl-buttons').style.display = 'none';
+    document.getElementById('ctrl-share-card').style.display = 'none';
+    document.getElementById('observer-banner').style.display = 'flex';
+  }
+
+  buildDots();
+  showPage('page-timer');
+
+  if (ticker) clearInterval(ticker);
+  ticker = setInterval(renderTimer, 250);
+  renderTimer();
+}
+
+function buildDots() {
+  const row = document.getElementById('dot-row');
+  row.innerHTML = '';
+  const n = localState.cfg.stations;
+  for (let i = 0; i < n; i++) {
+    const d = document.createElement('div');
+    d.className = 'dot';
+    d.id = 'dot-' + i;
+    d.textContent = i + 1;
+    row.appendChild(d);
+  }
+  updateDots();
+}
+
+function updateDots() {
+  if (!localState) return;
+  const n = localState.cfg.stations;
+  for (let i = 0; i < n; i++) {
+    const d = document.getElementById('dot-' + i);
+    if (!d) continue;
+    const done = i < localState.completedStations;
+    const active = i === localState.stationIdx && localState.phase === 'station';
+    const onBreak = i === localState.stationIdx && localState.phase === 'break';
+    d.className = 'dot' + (done ? ' done' : active ? ' active' : onBreak ? ' on-break' : '');
+  }
+}
+
+function phaseElapsed() {
+  if (!localState || !localState.phaseStartedAt) return 0;
+  const now = localState.pausedAt ? localState.pausedAt : Date.now();
+  return now - localState.phaseStartedAt - (localState.totalPausedMs || 0);
+}
+
+function soundOnce(key, fn) {
+  if (lastSoundKeys[key]) return;
+  lastSoundKeys[key] = true;
+  fn();
+}
+
+function renderTimer() {
+  if (!localState || localState.phase === 'waiting') return;
+  if (localState.phase === 'ended') {
+    clearInterval(ticker);
+    showPage('page-ended');
+    document.getElementById('ended-msg').textContent = 'All ' + localState.cfg.stations + ' stations completed.';
+    return;
+  }
+
+  updateDots();
+
+  const cfg = localState.cfg;
+  const isBreak = localState.phase === 'break';
+  const totalMs = (isBreak ? cfg.breakSecs : cfg.stationSecs) * 1000;
+  const elapsed = phaseElapsed();
+  const remaining = Math.max(0, totalMs - elapsed);
+  const secsLeft = Math.ceil(remaining / 1000);
+  const dMins = Math.floor(remaining / 60000);
+  const dSecs = Math.floor((remaining % 60000) / 1000);
+  const timeStr = String(dMins).padStart(2,'0') + ':' + String(dSecs).padStart(2,'0');
+  const frac = totalMs > 0 ? remaining / totalMs : 0;
+
+  document.getElementById('big-time').textContent = timeStr;
+  document.getElementById('prog-fill').style.width = (frac * 100).toFixed(1) + '%';
+
+  const bt = document.getElementById('big-time');
+  const pf = document.getElementById('prog-fill');
+  const badge = document.getElementById('timer-badge');
+  const sub = document.getElementById('timer-sub');
+  const phaseTag = document.getElementById('phase-tag');
+  const stName = document.getElementById('station-name');
+
+  if (localState.pausedAt) {
+    bt.className = 'big-time';
+    pf.className = 'prog-fill';
+    badge.className = 'badge badge-gray';
+    badge.textContent = '⏸ Paused';
+    sub.textContent = 'Session paused';
+    document.getElementById('pause-btn').textContent = '▶ Resume';
+    return;
+  }
+
+  document.getElementById('pause-btn').textContent = '⏸ Pause';
+
+  if (isBreak) {
+    phaseTag.textContent = 'BREAK';
+    const breakNum = localState.stationIdx;
+    stName.textContent = breakNum === 0
+      ? 'Opening break — station 1 starting soon'
+      : 'Break ' + breakNum + ' of ' + (cfg.stations - 1) + ' — station ' + (localState.stationIdx + 1) + ' next';
+    bt.className = 'big-time teal';
+    pf.className = 'prog-fill';
+    badge.className = 'badge badge-teal';
+    badge.textContent = 'Break';
+    sub.textContent = 'Station ' + (localState.stationIdx + 1) + ' coming up';
+
+    const warnAt = Math.min(60, cfg.breakSecs - 5);
+    if (secsLeft <= warnAt + 1 && secsLeft > warnAt - 2) {
+      soundOnce('break-warn-' + localState.stationIdx, playBreakWarn);
+    }
+    if (secsLeft <= 3 && secsLeft >= 1) {
+      soundOnce('break-end-' + localState.stationIdx, playBreakWarn);
+    }
+
+    if (isController && remaining <= 0) {
+      advanceToStation();
+    }
+  } else {
+    phaseTag.textContent = 'STATION ' + (localState.stationIdx + 1) + ' OF ' + cfg.stations;
+    stName.textContent = cfg.name ? cfg.name + ' · Station ' + (localState.stationIdx + 1) : 'Station ' + (localState.stationIdx + 1);
+
+    const isWarn = secsLeft <= cfg.warnSecs && secsLeft > 10;
+    const isDanger = secsLeft <= 10 && secsLeft > 0;
+
+    if (isDanger) {
+      bt.className = 'big-time red pulse';
+      pf.className = 'prog-fill red';
+      badge.className = 'badge badge-red';
+      badge.textContent = '⚠ Time up soon';
+    } else if (isWarn) {
+      bt.className = 'big-time amber';
+      pf.className = 'prog-fill amber';
+      badge.className = 'badge badge-amber';
+      badge.textContent = cfg.warnSecs + 's warning';
+    } else {
+      bt.className = 'big-time';
+      pf.className = 'prog-fill';
+      badge.className = 'badge badge-teal';
+      badge.textContent = 'Running';
+    }
+    sub.textContent = 'Station ' + (localState.stationIdx + 1) + ' of ' + cfg.stations;
+
+    if (secsLeft <= cfg.warnSecs + 1 && secsLeft > cfg.warnSecs - 2) {
+      soundOnce('warn-' + localState.stationIdx, playOneMinWarn);
+    }
+    if (secsLeft <= 4 && secsLeft >= 1) {
+      soundOnce('end-' + localState.stationIdx, playStationEnd);
+    }
+
+    if (isController && remaining <= 0) {
+      advanceToBreakOrEnd();
+    }
+  }
+}
+
+function advanceToStation() {
+  if (!isController || !sessionRef) return;
+  const now = Date.now();
+  const update = {
+    phase: 'station',
+    phaseStartedAt: now,
+    pausedAt: null,
+    totalPausedMs: 0,
+    soundLog: {},
+    ts: now
+  };
+  Object.assign(localState, update);
+  sessionRef.update(update);
+  lastSoundKeys = {};
+  soundOnce('station-start-' + localState.stationIdx, playTwoToneStart);
+  renderTimer();
+}
+
+function advanceToBreakOrEnd() {
+  if (!isController || !sessionRef) return;
+  const newCompleted = localState.stationIdx + 1;
+  if (newCompleted >= localState.cfg.stations) {
+    const update = { phase: 'ended', ts: Date.now() };
+    Object.assign(localState, update);
+    sessionRef.update(update);
+    clearInterval(ticker);
+    soundOnce('session-end', playStationEnd);
+    showPage('page-ended');
+    document.getElementById('ended-msg').textContent = 'All ' + localState.cfg.stations + ' stations completed.';
+    return;
+  }
+  const now = Date.now();
+  const update = {
+    phase: 'break',
+    stationIdx: localState.stationIdx + 1,
+    completedStations: newCompleted,
+    phaseStartedAt: now,
+    pausedAt: null,
+    totalPausedMs: 0,
+    soundLog: {},
+    ts: now
+  };
+  Object.assign(localState, update);
+  sessionRef.update(update);
+  lastSoundKeys = {};
+  renderTimer();
+}
+
+function skipPhase() {
+  if (!isController) return;
+  lastSoundKeys = {};
+  if (localState.phase === 'break') advanceToStation();
+  else advanceToBreakOrEnd();
+}
+
+function togglePause() {
+  if (!isController || !sessionRef) return;
+  const now = Date.now();
+  if (localState.pausedAt) {
+    const added = now - localState.pausedAt;
+    const update = {
+      pausedAt: null,
+      totalPausedMs: (localState.totalPausedMs || 0) + added,
+      ts: now
+    };
+    Object.assign(localState, update);
+    sessionRef.update(update);
+  } else {
+    const update = { pausedAt: now, ts: now };
+    Object.assign(localState, update);
+    sessionRef.update(update);
+  }
+  renderTimer();
+}
+
+function endSession() {
+  if (!isController || !sessionRef) return;
+  if (!confirm('End the session for all observers too?')) return;
+  sessionRef.remove();
+  clearInterval(ticker);
+  showPage('page-ended');
+  document.getElementById('ended-msg').textContent = 'Session ended by controller.';
+}
+
+function cancelSession() {
+  if (sessionRef) sessionRef.remove();
+  sessionCode = null; sessionRef = null;
+  showPage('page-controller-setup');
+}
+
+function copyLink() {
+  navigator.clipboard.writeText(document.getElementById('share-link').value).then(() => {
+    const btn = document.querySelector('#page-share .copy-row button');
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+  });
+}
+function copyRunningLink() {
+  navigator.clipboard.writeText(document.getElementById('running-link').value).then(() => {
+    const btns = document.querySelectorAll('#ctrl-share-card button');
+    btns.forEach(b => { b.textContent = 'Copied!'; });
+    setTimeout(() => { btns.forEach(b => { b.textContent = 'Copy'; }); }, 2000);
+  });
+}
+
+function checkHashCode() {
+  const hash = location.hash.slice(1).trim().toUpperCase();
+  if (hash.length === 6 && /^[A-Z0-9]+$/.test(hash)) {
+    document.getElementById('join-code').value = hash;
+    showPage('page-observer-join');
+  }
+}
+
+window.addEventListener('load', () => {
+  initFirebase();
+  checkHashCode();
+});
+window.addEventListener('hashchange', checkHashCode);
+</script>
+</body>
+</html>
