@@ -12,7 +12,7 @@
 // ---------------------------------------------------------
 
 var __OSCE_FIREBASE_CONFIG = {
-  apiKey: "AIzaSyC5KlsWCwAczskZz8_UVjkB_GVo4VMfyBI",
+  piKey: "AIzaSyC5KlsWCwAczskZz8_UVjkB_GVo4VMfyBI",
   authDomain: "osce-timer-zh.firebaseapp.com",
   databaseURL: "https://osce-timer-zh-default-rtdb.europe-west1.firebasedatabase.app",
   projectId: "osce-timer-zh",
