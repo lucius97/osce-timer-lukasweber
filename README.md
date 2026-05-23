@@ -23,8 +23,13 @@ They lock down access and auto-delete sessions after 4 hours:
     "sessions": {
       "$sessionId": {
         ".read": true,
-        ".write": true,
-        ".indexOn": ["createdAt"]
+        ".write": true
+      }
+    },
+    "sessionIndex": {
+      ".read": true,
+      "$sessionId": {
+        ".write": true
       }
     }
   }

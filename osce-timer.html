@@ -746,6 +746,16 @@ async function createSession() {
     // Session persists even if controller disconnects — no onDisconnect remove
     isController = true;
     localState   = initState;
+    // Write lightweight index entry so the session list can find this session
+    const cfg = initState.cfg;
+    db.ref('sessionIndex/' + sessionCode).set({
+      name:        cfg.name || 'OSCE Session',
+      phase:       'waiting',
+      stationIdx:  0,
+      stations:    cfg.stations,
+      stationSecs: cfg.stationSecs,
+      updatedAt:   Date.now()
+    });
 
     document.getElementById('share-code').textContent = sessionCode;
     const link = location.href.split('#')[0] + '#' + sessionCode;
@@ -784,6 +794,10 @@ function startSession() {
   };
   Object.assign(localState, update);
   sessionRef.update(update);
+  // Update index so session list shows 'break' immediately
+  if (db && sessionCode && localState.cfg) {
+    db.ref('sessionIndex/' + sessionCode).update({ phase: 'break', stationIdx: 0, updatedAt: Date.now() });
+  }
   startObserving(); // controller also subscribes to Firebase so state is always in sync
 }
 
@@ -976,6 +990,19 @@ function renderTimer() {
 
 // ── Advance helpers ──────────────────────────────────────
 
+function updateSessionIndex(phase, stationIdx) {
+  if (!isController || !db || !sessionCode) return;
+  const cfg = localState.cfg;
+  db.ref('sessionIndex/' + sessionCode).set({
+    name:      cfg.name || 'OSCE Session',
+    phase:     phase,
+    stationIdx: stationIdx,
+    stations:  cfg.stations,
+    stationSecs: cfg.stationSecs,
+    updatedAt: Date.now()
+  });
+}
+
 function advanceToStation() {
   if (!isController || !sessionRef || advancing) return;
   advancing = true;
@@ -987,6 +1014,7 @@ function advanceToStation() {
   sessionRef.update(update).then(() => { advancing = false; });
   lastSoundKeys = {};
   soundOnce('station-start-' + localState.stationIdx, playTwoToneStart);
+  updateSessionIndex('station', localState.stationIdx);
 }
 
 function advanceToBreakOrEnd() {
@@ -996,17 +1024,20 @@ function advanceToBreakOrEnd() {
   if (newCompleted >= localState.cfg.stations) {
     const update = { phase: 'ended', ts: Date.now() };
     sessionRef.update(update).then(() => { advancing = false; });
+    if (db && sessionCode) db.ref('sessionIndex/' + sessionCode).remove();
     soundOnce('session-end', playStationEnd);
     return;
   }
   const now = Date.now();
+  const nextIdx = localState.stationIdx + 1;
   const update = {
-    phase: 'break', stationIdx: localState.stationIdx + 1,
+    phase: 'break', stationIdx: nextIdx,
     completedStations: newCompleted, phaseStartedAt: now,
     pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now
   };
   sessionRef.update(update).then(() => { advancing = false; });
   lastSoundKeys = {};
+  updateSessionIndex('break', nextIdx);
 }
 
 // ── Controls ─────────────────────────────────────────────
@@ -1036,6 +1067,7 @@ function endSession() {
   if (!isController || !sessionRef) return;
   if (!confirm('End the session for all observers too?')) return;
   clearControllerClaim(sessionCode);
+  if (db && sessionCode) db.ref('sessionIndex/' + sessionCode).remove();
   sessionRef.remove();
   clearInterval(ticker);
   stopPresenceHeartbeat();
@@ -1149,27 +1181,21 @@ let sessionListRef = null;
 
 function startSessionList() {
   if (!db) return;
-  sessionListRef = db.ref('sessions');
+  sessionListRef = db.ref('sessionIndex');
 
   sessionListRef.on('value', snap => {
-    const items = document.getElementById('session-list-items');
-    const empty = document.getElementById('session-list-empty');
+    const items  = document.getElementById('session-list-items');
+    const empty  = document.getElementById('session-list-empty');
     const status = document.getElementById('session-list-status');
+    if (!items) return;
     items.innerHTML = '';
 
-    if (!snap.exists()) {
-      empty.style.display = 'block';
-      status.textContent = 'Live';
-      return;
-    }
+    const index = snap.exists() ? snap.val() : {};
+    const codes = Object.keys(index).filter(k => index[k] && index[k].phase !== 'ended');
 
-    const sessions = snap.val();
-    const codes = Object.keys(sessions).filter(k => {
-      const s = sessions[k];
-      return s && s.cfg && s.phase !== 'ended';
-    });
-
-    status.textContent = 'Live · ' + codes.length + ' session' + (codes.length !== 1 ? 's' : '');
+    status.textContent = codes.length
+      ? codes.length + ' active session' + (codes.length !== 1 ? 's' : '')
+      : 'No active sessions';
 
     if (codes.length === 0) {
       empty.style.display = 'block';
@@ -1177,35 +1203,40 @@ function startSessionList() {
     }
     empty.style.display = 'none';
 
+    // Sort: running first, then break, then waiting
+    const order = { station: 0, break: 1, waiting: 2 };
+    codes.sort((a, b) => (order[index[a].phase] || 3) - (order[index[b].phase] || 3));
+
     codes.forEach(code => {
-      const s = sessions[code];
-      const cfg = s.cfg || {};
+      const s = index[code];
       const phase = s.phase || 'waiting';
 
       let badgeClass = 'sib-wait', badgeText = 'Waiting';
-      if (phase === 'break')   { badgeClass = 'sib-break'; badgeText = 'Break'; }
+      if (phase === 'break')   { badgeClass = 'sib-break'; badgeText = 'On break'; }
       if (phase === 'station') { badgeClass = 'sib-run';   badgeText = 'Running'; }
-      if (phase === 'ended')   { badgeClass = 'sib-done';  badgeText = 'Ended'; }
 
-      const stationInfo = phase === 'station' || phase === 'break'
-        ? 'Station ' + (s.stationIdx + 1) + ' of ' + cfg.stations
-        : cfg.stations + ' stations · ' + (cfg.stationSecs / 60) + ' min each';
+      const stationInfo = (phase === 'station' || phase === 'break')
+        ? 'Station ' + (s.stationIdx + 1) + ' of ' + s.stations
+        : s.stations + ' stations · ' + Math.round(s.stationSecs / 60) + ' min each';
 
       const div = document.createElement('div');
       div.className = 'session-item';
-      div.innerHTML = `
-        <div class="session-item-info">
-          <div class="session-item-name">${cfg.name || 'OSCE Session'}</div>
-          <div class="session-item-meta">${stationInfo} &nbsp;·&nbsp; Code: <strong>${code}</strong></div>
-        </div>
-        <span class="session-item-badge ${badgeClass}">${badgeText}</span>
-      `;
+      div.innerHTML =
+        '<div class="session-item-info">' +
+          '<div class="session-item-name">' + (s.name || 'OSCE Session') + '</div>' +
+          '<div class="session-item-meta">' + stationInfo + ' &nbsp;·&nbsp; Code: <strong>' + code + '</strong></div>' +
+        '</div>' +
+        '<span class="session-item-badge ' + badgeClass + '">' + badgeText + '</span>';
       div.onclick = () => {
         history.replaceState(null, '', '#' + code);
         joinSessionByCode(code);
       };
       items.appendChild(div);
     });
+  }, err => {
+    const status = document.getElementById('session-list-status');
+    if (status) status.textContent = 'Could not load sessions';
+    console.warn('Session list error:', err);
   });
 }
 
