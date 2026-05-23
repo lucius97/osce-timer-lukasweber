@@ -686,16 +686,14 @@ function createAndWhitelistElement(evt, filename) {
   if (!filename) return;
   const el = new Audio(filename);
   el.preload = 'auto';
-  // Whitelist at volume 0 so the silent play/pause doesn't audibly blip on iOS
-  el.volume = 0;
+  el.volume = 0; // silent during whitelist play so iOS doesn't blip
   const p = el.play();
   if (p && p.then) {
-    p.then(() => {
-      el.pause();
-      el.currentTime = 0;
-      el.volume = 0.9; // restore volume for actual playback
-    }).catch(() => {});
+    p.then(() => { el.pause(); el.currentTime = 0; }).catch(() => {});
   }
+  // Restore volume immediately — don't wait for async .then()
+  // so the element is ready at full volume for the first real playback
+  setTimeout(() => { el.volume = 0.9; }, 0);
   audioElements[evt] = el;
   audioWhitelisted[filename] = true;
 }
@@ -1044,12 +1042,16 @@ function startObserving() {
 
     // Sound cue listener — only plays cues written after this device joined.
     // Using the join timestamp prevents replaying old cues on reconnect.
-    const joinedAt = now();
+    // Record join time using raw Date.now() — serverTimeOffset may not be
+    // synced yet on Android, and cue.at is written with now() on the controller.
+    // We use a 3s grace window before joinedAt to avoid dropping legitimate cues
+    // due to clock skew between devices, while still blocking stale replays.
+    const joinedAt = Date.now() - 3000;
     sessionRef.child('soundCue').on('value', snap => {
       if (!snap.exists()) return;
       const cue = snap.val();
-      // Ignore cues from before we joined (replayed on initial attach or reconnect)
-      if (!cue.at || cue.at <= joinedAt) return;
+      // Ignore cues written more than 3s before we joined (stale replay protection)
+      if (!cue.at || cue.at < joinedAt) return;
       onSoundCue(cue);
     });
 
