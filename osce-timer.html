@@ -786,11 +786,13 @@ function joinSession() {
 function startSession() {
   if (!sessionRef || !isController) return;
   const now = Date.now();
+  const cfg2 = localState.cfg;
   const update = {
     phase: 'break',
     stationIdx: 0,
     completedStations: 0,
     phaseStartedAt: now,
+    phaseEndsAt: now + cfg2.breakSecs * 1000,
     pausedAt: null,
     totalPausedMs: 0,
     soundLog: {},
@@ -806,30 +808,96 @@ function startSession() {
 }
 
 function startObserving() {
-  initTimerPage();
+  // Catchup: if the session is overdue when we join (e.g. all devices were
+  // offline), immediately run any missed phase transitions before starting.
+  catchUpOverduePhases().then(() => {
+    initTimerPage();
 
-  sessionRef.on('value', snap => {
-    if (!snap.exists()) {
-      // Session was explicitly deleted (controller called endSession)
-      clearInterval(ticker);
-      showPage('page-ended');
-      document.getElementById('ended-msg').textContent = 'The session was ended by the controller.';
-      return;
+    sessionRef.on('value', snap => {
+      if (!snap.exists()) {
+        clearInterval(ticker);
+        showPage('page-ended');
+        document.getElementById('ended-msg').textContent = 'The session was ended by the controller.';
+        return;
+      }
+      const prev = localState ? localState.phase + '_' + localState.stationIdx : '';
+      localState = snap.val();
+      const next = localState.phase + '_' + localState.stationIdx;
+      if (prev !== next) {
+        lastSoundKeys = {};
+        advancing = false;
+        cancelScheduledAdvance();
+      }
+      renderTimer();
+    });
+
+    if (isController) {
+      startPresenceHeartbeat();
+    } else {
+      watchControllerPresence();
     }
-    const prev = localState ? localState.phase + '_' + localState.stationIdx : '';
-    localState = snap.val();
-    const next = localState.phase + '_' + localState.stationIdx;
-    if (prev !== next) {
-      lastSoundKeys = {};
-      advancing = false; // Firebase confirmed the advance — safe to advance again
-    }
-    renderTimer();
   });
+}
 
-  if (isController) {
-    startPresenceHeartbeat();
-  } else {
-    watchControllerPresence();
+// Advance through any phases that expired while no device was connected.
+// Runs once on join, before the live listener starts.
+async function catchUpOverduePhases() {
+  if (!sessionRef || !localState) return;
+  const s = localState;
+  if (s.phase === 'waiting' || s.phase === 'ended') return;
+  if (s.pausedAt) return; // session is paused — nothing to catch up
+
+  const now = Date.now();
+  let state = { ...s };
+  let changed = false;
+  let safetyLimit = 0; // prevent infinite loop if data is corrupt
+
+  while (safetyLimit++ < 50) {
+    if (state.phase === 'ended') break;
+
+    const endsAt = state.phaseEndsAt ||
+      (state.phaseStartedAt + (state.phase === 'break'
+        ? state.cfg.breakSecs * 1000
+        : state.cfg.stationSecs * 1000)
+      - (state.totalPausedMs || 0));
+
+    if (now < endsAt) break; // this phase hasn't expired yet — stop
+
+    changed = true;
+
+    if (state.phase === 'break') {
+      // Break ended → start station
+      const phaseStartedAt = endsAt;
+      const phaseEndsAt = endsAt + state.cfg.stationSecs * 1000;
+      state = { ...state, phase: 'station', phaseStartedAt, phaseEndsAt,
+        pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now };
+
+    } else if (state.phase === 'station') {
+      // Station ended → next break or end
+      const newCompleted = state.stationIdx + 1;
+      if (newCompleted >= state.cfg.stations) {
+        state = { ...state, phase: 'ended', ts: now };
+        break;
+      }
+      const nextIdx = state.stationIdx + 1;
+      const phaseStartedAt = endsAt;
+      const phaseEndsAt = endsAt + state.cfg.breakSecs * 1000;
+      state = { ...state, phase: 'break', stationIdx: nextIdx,
+        completedStations: newCompleted, phaseStartedAt, phaseEndsAt,
+        pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now };
+    }
+  }
+
+  if (changed) {
+    localState = state;
+    try {
+      await sessionRef.update(state);
+      if (state.phase === 'ended' && db && sessionCode) {
+        db.ref('sessionIndex/' + sessionCode).remove();
+      }
+    } catch(e) {
+      console.warn('Catchup write failed:', e.message);
+    }
   }
 }
 
@@ -893,6 +961,24 @@ function phaseElapsed() {
   const now = localState.pausedAt ? localState.pausedAt : Date.now();
   return now - localState.phaseStartedAt - (localState.totalPausedMs || 0);
 }
+
+// How many ms remain in the current phase.
+// Uses phaseEndsAt (Firebase-stored) when available so all devices agree exactly.
+function phaseRemaining() {
+  if (!localState) return 0;
+  const cfg = localState.cfg;
+  const isBreak = localState.phase === 'break';
+  const totalMs = (isBreak ? cfg.breakSecs : cfg.stationSecs) * 1000;
+
+  if (localState.phaseEndsAt) {
+    // Adjust for accumulated pause time and current pause
+    const pausedMs = (localState.totalPausedMs || 0) +
+      (localState.pausedAt ? Date.now() - localState.pausedAt : 0);
+    return Math.max(0, localState.phaseEndsAt - Date.now() + pausedMs - (localState.totalPausedMs||0));
+  }
+  // Fallback for sessions created before phaseEndsAt was added
+  return Math.max(0, totalMs - phaseElapsed());
+}
 function soundOnce(key, fn) {
   if (lastSoundKeys[key]) return;
   lastSoundKeys[key] = true;
@@ -917,8 +1003,7 @@ function renderTimer() {
   const cfg      = localState.cfg;
   const isBreak  = localState.phase === 'break';
   const totalMs  = (isBreak ? cfg.breakSecs : cfg.stationSecs) * 1000;
-  const elapsed  = phaseElapsed();
-  const remaining = Math.max(0, totalMs - elapsed);
+  const remaining = phaseRemaining();
   const secsLeft  = Math.ceil(remaining / 1000);
   const dMins     = Math.floor(remaining / 60000);
   const dSecs     = Math.floor((remaining % 60000) / 1000);
@@ -960,7 +1045,7 @@ function renderTimer() {
     if (secsLeft <= 3 && secsLeft >= 1)
       soundOnce('break-end-' + localState.stationIdx, playBreakWarn);
 
-    if (isController && remaining <= 0) advanceToStation();
+    if (remaining <= 0) scheduleAdvance('station');
 
   } else {
     phaseTag.textContent = 'STATION ' + (localState.stationIdx+1) + ' OF ' + cfg.stations;
@@ -988,7 +1073,7 @@ function renderTimer() {
     if (secsLeft <= 4 && secsLeft >= 1)
       soundOnce('end-' + localState.stationIdx, playStationEnd);
 
-    if (isController && remaining <= 0) advanceToBreakOrEnd();
+    if (remaining <= 0) scheduleAdvance('break');
   }
 }
 
@@ -1007,12 +1092,33 @@ function updateSessionIndex(phase, stationIdx) {
   });
 }
 
+// Any connected device can trigger auto-advance.
+// The controller fires immediately; observers wait 3s to give the controller priority.
+// Firebase's advancing guard ensures only one write wins.
+let advanceTimer = null;
+function scheduleAdvance(to) {
+  if (advancing || advanceTimer) return;
+  const delay = isController ? 0 : 3000;
+  advanceTimer = setTimeout(() => {
+    advanceTimer = null;
+    if (to === 'station') advanceToStation();
+    else advanceToBreakOrEnd();
+  }, delay);
+}
+
+// Reset the advance timer when Firebase confirms a phase change
+// (already done in the listener via advancing=false, but also clear the timeout)
+function cancelScheduledAdvance() {
+  if (advanceTimer) { clearTimeout(advanceTimer); advanceTimer = null; }
+}
+
 function advanceToStation() {
-  if (!isController || !sessionRef || advancing) return;
+  if (!sessionRef || advancing) return;
   advancing = true;
   const now = Date.now();
   const update = {
     phase: 'station', phaseStartedAt: now,
+    phaseEndsAt: now + localState.cfg.stationSecs * 1000,
     pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now
   };
   sessionRef.update(update).then(() => { advancing = false; });
@@ -1022,7 +1128,7 @@ function advanceToStation() {
 }
 
 function advanceToBreakOrEnd() {
-  if (!isController || !sessionRef || advancing) return;
+  if (!sessionRef || advancing) return;
   advancing = true;
   const newCompleted = localState.stationIdx + 1;
   if (newCompleted >= localState.cfg.stations) {
@@ -1037,6 +1143,7 @@ function advanceToBreakOrEnd() {
   const update = {
     phase: 'break', stationIdx: nextIdx,
     completedStations: newCompleted, phaseStartedAt: now,
+    phaseEndsAt: now + localState.cfg.breakSecs * 1000,
     pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now
   };
   sessionRef.update(update).then(() => { advancing = false; });
@@ -1058,7 +1165,15 @@ function togglePause() {
   const now = Date.now();
   if (localState.pausedAt) {
     const added = now - localState.pausedAt;
-    const update = { pausedAt: null, totalPausedMs: (localState.totalPausedMs||0)+added, ts: now };
+    const newPausedMs = (localState.totalPausedMs || 0) + added;
+    // Shift phaseEndsAt forward by the pause duration so the timer stays accurate
+    const newEndsAt = localState.phaseEndsAt ? localState.phaseEndsAt + added : null;
+    const update = {
+      pausedAt: null,
+      totalPausedMs: newPausedMs,
+      phaseEndsAt: newEndsAt,
+      ts: now
+    };
     Object.assign(localState, update); sessionRef.update(update);
   } else {
     const update = { pausedAt: now, ts: now };
