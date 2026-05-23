@@ -485,6 +485,11 @@ To use:
     Observer mode — view only. Code: <strong id="obs-code-display">–</strong>
   </div>
 
+  <div id="sound-unlock-banner" style="display:none; background:var(--blue-bg); border:0.5px solid rgba(24,95,165,0.25); border-radius:var(--radius); padding:10px 14px; margin-bottom:1rem; font-size:13px; color:var(--blue-text); align-items:center; gap:10px; flex-wrap:wrap;">
+    <span>🔊 Tap to enable audio cues on this device</span>
+    <button onclick="observerUnlockAudio()" style="margin-left:auto; font-size:12px; padding:5px 14px; background:var(--blue-text); color:var(--blue-bg); border:none; border-radius:6px; cursor:pointer; font-weight:500;">Enable sound</button>
+  </div>
+
   <div id="ctrl-offline-banner" style="display:none; background:var(--amber-bg); border:0.5px solid rgba(186,117,23,0.3); border-radius:var(--radius); padding:10px 14px; margin-bottom:1rem; font-size:13px; color:var(--amber-text); align-items:center; gap:10px; flex-wrap:wrap;">
     <span>⚠️ Controller appears to be offline — the session is still running. Timers continue automatically.</span>
     <button onclick="promoteToController()" style="font-size:12px; padding:5px 12px; background:var(--amber-text); color:var(--amber-bg); border:none; border-radius:6px; cursor:pointer; margin-left:auto;">Take over as controller</button>
@@ -638,15 +643,28 @@ function unlockAudio() {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     audioReady = true;
   } catch(e) { return; }
-  // iOS suspends AudioContext immediately — resume it
-  if (audioCtx.state === 'suspended') {
-    audioCtx.resume();
-  }
+  if (audioCtx.state === 'suspended') audioCtx.resume();
   // Pre-fetch all configured sound files so they're decoded and cached
   SOUND_EVENTS.forEach(evt => {
     const filename = soundFiles[evt];
     if (filename) prefetchAudio(filename);
   });
+}
+
+function observerUnlockAudio() {
+  // Called by the explicit "Enable sound" button tap — guaranteed gesture context on iOS
+  unlockAudio();
+  // Play a silent buffer to fully unblock iOS audio pipeline
+  if (audioCtx) {
+    const buf = audioCtx.createBuffer(1, 1, 22050);
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(audioCtx.destination);
+    src.start(0);
+  }
+  // Hide the banner
+  const banner = document.getElementById('sound-unlock-banner');
+  if (banner) banner.style.display = 'none';
 }
 
 function prefetchAudio(filename) {
@@ -1103,6 +1121,7 @@ function initTimerPage() {
     document.getElementById('obs-buttons').style.display           = 'none';
     document.getElementById('observer-count').style.display        = 'inline-flex';
     document.getElementById('sound-settings-card').style.display   = 'block';
+    document.getElementById('sound-unlock-banner').style.display   = 'none';
     // begin/retime visibility handled by renderTimer based on phase
   } else {
     document.getElementById('ctrl-begin').style.display        = 'none';
@@ -1111,6 +1130,9 @@ function initTimerPage() {
     document.getElementById('ctrl-share-card').style.display   = 'none';
     document.getElementById('observer-banner').style.display   = 'flex';
     document.getElementById('obs-buttons').style.display       = 'flex';
+    if (!audioReady) {
+      document.getElementById('sound-unlock-banner').style.display = 'flex';
+    }
   }
 
   buildDots();
