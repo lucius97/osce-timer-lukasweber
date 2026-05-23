@@ -602,7 +602,7 @@ let serverTimeOffset = 0; // ms difference: serverTime = Date.now() + serverTime
 // /.info/serverTimeOffset gives us (serverTime - localTime) in ms.
 function syncServerClock() {
   if (!db) return;
-  db.ref('.info/serverTimeOffset').on('value', snap => {
+  db.ref('.info/serverTimeOffset').once('value').then(snap => {
     serverTimeOffset = snap.val() || 0;
   });
 }
@@ -1030,11 +1030,15 @@ function startObserving() {
     myPresenceRef.onDisconnect().remove();
     myPresenceRef.set({ ts: Date.now(), isController: isController ? true : false });
 
-    // Watch observer count (controller only)
+    // Watch observer count (controller only) — separate listener so it doesn't
+    // interfere with main session state listener
     if (isController) {
+      let lastObsCount = -1;
       sessionRef.child('observers').on('value', snap => {
         const all = snap.exists() ? snap.val() : {};
         const count = Object.values(all).filter(v => !v.isController).length;
+        if (count === lastObsCount) return; // no change — skip DOM update
+        lastObsCount = count;
         const el = document.getElementById('observer-count');
         if (el) el.textContent = count + ' observer' + (count !== 1 ? 's' : '') + ' connected';
       });
@@ -1047,7 +1051,7 @@ function startObserving() {
     // We use a 3s grace window before joinedAt to avoid dropping legitimate cues
     // due to clock skew between devices, while still blocking stale replays.
     const joinedAt = Date.now() - 3000;
-    sessionRef.child('soundCue').on('value', snap => {
+    db.ref('soundCues/' + sessionCode).on('value', snap => {
       if (!snap.exists()) return;
       const cue = snap.val();
       // Ignore cues written more than 3s before we joined (stale replay protection)
@@ -1266,7 +1270,7 @@ function soundOnce(key, fn) {
 // Only the controller calls this; all devices react via the soundCue listener.
 function fireSoundCue(event, key) {
   if (!isController || !sessionRef) return;
-  sessionRef.child('soundCue').set({ event, key, at: now() });
+  db.ref('soundCues/' + sessionCode).set({ event, key, at: now() });
 }
 
 // Called from the Firebase listener whenever soundCue changes.
@@ -1630,7 +1634,10 @@ function endSession() {
   if (!isController || !sessionRef) return;
   if (!confirm('End the session for all observers too?')) return;
   clearControllerClaim(sessionCode);
-  if (db && sessionCode) db.ref('sessionIndex/' + sessionCode).remove();
+  if (db && sessionCode) {
+    db.ref('sessionIndex/' + sessionCode).remove();
+    db.ref('soundCues/' + sessionCode).remove();
+  }
   sessionRef.remove();
   stopTicker();
   stopPresenceHeartbeat();
@@ -1748,7 +1755,8 @@ function goHome() {
   stopTicker();
   if (sessionRef) {
     sessionRef.child('observers/' + deviceId).remove();
-    sessionRef.off(); // removes all child listeners including soundCue and presence
+    db.ref('soundCues/' + sessionCode).off();
+    sessionRef.off(); // removes presence + observers listeners
     sessionRef = null;
   }
   advancing = false;
@@ -1935,36 +1943,40 @@ function startSessionList() {
 }
 
 function fallbackSessionList() {
-  // Fallback: read /sessions directly and extract summary fields
-  // Less efficient but works without sessionIndex rules
+  // Fallback: poll /sessions every 5s instead of streaming
+  // Streaming /sessions fires on every observer/presence write — too expensive
   if (!db) return;
-  if (sessionListRef) { sessionListRef.off(); }
-  sessionListRef = db.ref('sessions');
-  sessionListRef.on('value',
-    snap => {
-      if (!snap.exists()) { renderSessionList({}); return; }
-      const raw = snap.val();
-      // Build a sessionIndex-shaped object from the full session data
-      const index = {};
-      Object.keys(raw).forEach(code => {
-        const s = raw[code];
-        if (!s || !s.cfg) return;
-        index[code] = {
-          name:        s.cfg.name || 'OSCE Session',
-          phase:       s.phase || 'waiting',
-          stationIdx:  s.stationIdx || 0,
-          stations:    s.cfg.stations,
-          stationSecs: s.cfg.stationSecs
-        };
-      });
-      renderSessionList(index);
-    },
-    err => {
-      const status = document.getElementById('session-list-status');
-      if (status) status.textContent = 'Could not load — check Firebase rules';
-      console.error('Session list fallback error:', err.message);
-    }
-  );
+  if (sessionListRef) { sessionListRef.off(); sessionListRef = null; }
+  let active = true;
+  sessionListRef = { off: () => { active = false; } }; // sentinel for stopSessionList
+  const poll = () => {
+    if (!active) return;
+    db.ref('sessions').once('value').then(snap => {
+      if (!active) return;
+      if (!snap.exists()) { renderSessionList({}); }
+      else {
+        const raw = snap.val();
+        const index = {};
+        Object.keys(raw).forEach(code => {
+          const s = raw[code];
+          if (!s || !s.cfg) return;
+          index[code] = {
+            name: s.cfg.name || 'OSCE Session',
+            phase: s.phase || 'waiting',
+            stationIdx: s.stationIdx || 0,
+            stations: s.cfg.stations,
+            stationSecs: s.cfg.stationSecs
+          };
+        });
+        renderSessionList(index);
+      }
+      if (active) setTimeout(poll, 5000);
+    }).catch(err => {
+      const el = document.getElementById('session-list-status');
+      if (el) el.textContent = 'Could not load — check Firebase rules';
+    });
+  };
+  poll();
 }
 
 function stopSessionList() {
