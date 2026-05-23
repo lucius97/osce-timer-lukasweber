@@ -228,16 +228,16 @@ To use:
 
   .clock-card {
     background: var(--surface); border: 0.5px solid var(--border);
-    border-radius: var(--radius-lg); padding: 2rem 1.5rem;
+    border-radius: var(--radius-lg); padding: 2.5rem 1.5rem 2rem;
     text-align: center; margin-bottom: 1rem;
   }
   .phase-tag {
-    font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
-    color: var(--text3); margin-bottom: 6px;
+    font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--text2); font-weight: 500; margin-bottom: 8px;
   }
-  .station-name { font-size: 16px; font-weight: 500; color: var(--text); margin-bottom: 12px; }
+  .station-name { font-size: 17px; font-weight: 500; color: var(--text); margin-bottom: 1rem; }
   .big-time {
-    font-size: 80px; font-weight: 500; letter-spacing: -3px;
+    font-size: 112px; font-weight: 500; letter-spacing: -5px;
     font-variant-numeric: tabular-nums; line-height: 1;
     color: var(--text); transition: color 0.3s;
   }
@@ -246,8 +246,8 @@ To use:
   .big-time.red   { color: var(--red); }
 
   .prog-wrap {
-    width: 100%; height: 6px; background: var(--surface2);
-    border-radius: 100px; margin-top: 1.25rem; overflow: hidden;
+    width: 100%; height: 8px; background: var(--surface2);
+    border-radius: 100px; margin-top: 1.5rem; overflow: hidden;
   }
   .prog-fill {
     height: 100%; border-radius: 100px; background: var(--teal);
@@ -297,7 +297,7 @@ To use:
   }
 
   @media (max-width: 480px) {
-    .big-time { font-size: 60px; }
+    .big-time { font-size: 80px; }
     .form-row { grid-template-columns: 1fr; }
     .role-grid { grid-template-columns: 1fr; }
   }
@@ -380,7 +380,7 @@ To use:
     <div class="form-row">
       <div class="form-group" style="margin-bottom:0">
         <label>Stations</label>
-        <input type="number" id="cfg-stations" min="2" max="12" value="5" />
+        <input type="number" id="cfg-stations" min="2" max="12" value="7" />
       </div>
       <div class="form-group" style="margin-bottom:0">
         <label>Session name (optional)</label>
@@ -393,8 +393,8 @@ To use:
     <div class="form-group">
       <label>Station duration</label>
       <div class="slider-row">
-        <input type="range" id="cfg-min" min="1" max="20" value="8" step="1" oninput="document.getElementById('cfg-min-out').textContent=this.value+' min'" />
-        <span class="slider-val" id="cfg-min-out">8 min</span>
+        <input type="range" id="cfg-min" min="1" max="20" value="4" step="1" oninput="document.getElementById('cfg-min-out').textContent=this.value+' min'" />
+        <span class="slider-val" id="cfg-min-out">4 min</span>
       </div>
     </div>
 
@@ -409,8 +409,8 @@ To use:
     <div class="form-group">
       <label>Prep duration (immediately before station)</label>
       <div class="slider-row">
-        <input type="range" id="cfg-prep" min="10" max="120" value="30" step="5" oninput="document.getElementById('cfg-prep-out').textContent=this.value+' s'" />
-        <span class="slider-val" id="cfg-prep-out">30 s</span>
+        <input type="range" id="cfg-prep" min="10" max="120" value="60" step="5" oninput="document.getElementById('cfg-prep-out').textContent=this.value+' s'" />
+        <span class="slider-val" id="cfg-prep-out">60 s</span>
       </div>
     </div>
 
@@ -686,12 +686,15 @@ function createAndWhitelistElement(evt, filename) {
   if (!filename) return;
   const el = new Audio(filename);
   el.preload = 'auto';
-  el.volume = 0.9;
-  // play()+pause() whitelists the element on iOS so it can be played later
+  // Whitelist at volume 0 so the silent play/pause doesn't audibly blip on iOS
+  el.volume = 0;
   const p = el.play();
   if (p && p.then) {
-    p.then(() => { el.pause(); el.currentTime = 0; })
-     .catch(() => {}); // file not found — will fall back to tone
+    p.then(() => {
+      el.pause();
+      el.currentTime = 0;
+      el.volume = 0.9; // restore volume for actual playback
+    }).catch(() => {});
   }
   audioElements[evt] = el;
   audioWhitelisted[filename] = true;
@@ -922,10 +925,10 @@ async function createSession() {
   hideError('setup-error');
   if (!initFirebase()) return;
 
-  const stations    = Math.max(2, Math.min(12, parseInt(document.getElementById('cfg-stations').value) || 5));
-  const stationSecs = (parseInt(document.getElementById('cfg-min').value) || 8) * 60;
+  const stations    = Math.max(2, Math.min(12, parseInt(document.getElementById('cfg-stations').value) || 7));
+  const stationSecs = (parseInt(document.getElementById('cfg-min').value) || 4) * 60;
   const breakSecs   = parseInt(document.getElementById('cfg-break').value) || 60;
-  const prepSecs    = parseInt(document.getElementById('cfg-prep').value) || 30;
+  const prepSecs    = parseInt(document.getElementById('cfg-prep').value) || 60;
   const warnSecs    = parseInt(document.getElementById('cfg-warn').value) || 60;
   const name        = document.getElementById('cfg-name').value.trim() || 'OSCE Session';
 
