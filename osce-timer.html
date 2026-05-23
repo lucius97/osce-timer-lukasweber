@@ -622,22 +622,59 @@ function saveSoundPrefs() {
   localStorage.setItem('osce_sound_enabled', JSON.stringify(soundEnabled));
 }
 
-document.addEventListener('click',      unlockAudio, { once: true });
-document.addEventListener('touchstart', unlockAudio, { once: true });
+// iOS/iPad requires AudioContext to be created AND resumed inside a
+// direct user gesture. We create it on first touch/click, then keep it
+// alive. All audio — both mp3 files and generated tones — is routed
+// through the AudioContext so it works reliably off the main thread.
+
+const audioBufferCache = {}; // filename → decoded AudioBuffer
+
+document.addEventListener('click',      unlockAudio);
+document.addEventListener('touchstart', unlockAudio);
 
 function unlockAudio() {
   if (audioReady) return;
   try {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    if (audioCtx.state === 'suspended') audioCtx.resume();
     audioReady = true;
-  } catch(e) {}
+  } catch(e) { return; }
+  // iOS suspends AudioContext immediately — resume it
+  if (audioCtx.state === 'suspended') {
+    audioCtx.resume();
+  }
+  // Pre-fetch all configured sound files so they're decoded and cached
+  SOUND_EVENTS.forEach(evt => {
+    const filename = soundFiles[evt];
+    if (filename) prefetchAudio(filename);
+  });
+}
+
+function prefetchAudio(filename) {
+  if (!audioCtx || audioBufferCache[filename] !== undefined) return;
+  audioBufferCache[filename] = null; // mark as loading
+  fetch(filename)
+    .then(r => { if (!r.ok) throw new Error(r.status); return r.arrayBuffer(); })
+    .then(buf => audioCtx.decodeAudioData(buf))
+    .then(decoded => { audioBufferCache[filename] = decoded; })
+    .catch(() => { audioBufferCache[filename] = false; }); // false = not available
+}
+
+function playBuffer(buffer) {
+  if (!audioCtx || !buffer) return;
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  const src = audioCtx.createBufferSource();
+  const gain = audioCtx.createGain();
+  src.buffer = buffer;
+  gain.gain.value = 0.9;
+  src.connect(gain);
+  gain.connect(audioCtx.destination);
+  src.start(0);
 }
 
 function tone(freq, dur, vol=0.38, delay=0) {
   if (!audioCtx) return;
+  if (audioCtx.state === 'suspended') audioCtx.resume();
   try {
-    if (audioCtx.state === 'suspended') audioCtx.resume();
     const o = audioCtx.createOscillator();
     const g = audioCtx.createGain();
     o.connect(g); g.connect(audioCtx.destination);
@@ -652,7 +689,7 @@ function tone(freq, dur, vol=0.38, delay=0) {
   } catch(e) {}
 }
 
-// Fallback tones used when mp3 file fails or is missing
+// Fallback tones used when mp3 file is missing or not yet loaded
 const FALLBACK_TONES = {
   'session-start': () => { tone(660,.18,.4,0); tone(880,.22,.4,.22); },
   'session-end':   () => { tone(880,.1,.44,0); tone(880,.1,.44,.14); tone(660,.1,.44,.28); tone(440,.35,.44,.42); },
@@ -663,15 +700,29 @@ const FALLBACK_TONES = {
 function playSound(event) {
   if (!soundEnabled) return;
   const filename = soundFiles[event];
-  if (filename) {
-    const audio = new Audio(filename);
-    audio.volume = 0.9;
-    audio.play().catch(() => {
-      // File not found or blocked — use fallback tone
-      if (FALLBACK_TONES[event]) FALLBACK_TONES[event]();
-    });
-  } else {
+  if (!filename) { if (FALLBACK_TONES[event]) FALLBACK_TONES[event](); return; }
+
+  const cached = audioBufferCache[filename];
+  if (cached) {
+    // Already decoded — play immediately via AudioContext (iOS-safe)
+    playBuffer(cached);
+  } else if (cached === false || !audioCtx) {
+    // File unavailable or AudioContext not ready — use fallback tone
     if (FALLBACK_TONES[event]) FALLBACK_TONES[event]();
+  } else {
+    // Still loading (null) or not yet fetched — fetch now and play when ready
+    if (cached === undefined) prefetchAudio(filename);
+    fetch(filename)
+      .then(r => { if (!r.ok) throw new Error(r.status); return r.arrayBuffer(); })
+      .then(buf => audioCtx.decodeAudioData(buf))
+      .then(decoded => {
+        audioBufferCache[filename] = decoded;
+        playBuffer(decoded);
+      })
+      .catch(() => {
+        audioBufferCache[filename] = false;
+        if (FALLBACK_TONES[event]) FALLBACK_TONES[event]();
+      });
   }
 }
 
@@ -938,9 +989,10 @@ function startObserving() {
     // Watch observer count (controller only)
     if (isController) {
       sessionRef.child('observers').on('value', snap => {
-        const count = snap.exists() ? Object.keys(snap.val()).length : 0;
+        const all = snap.exists() ? snap.val() : {};
+        const count = Object.values(all).filter(v => !v.isController).length;
         const el = document.getElementById('observer-count');
-        if (el) el.textContent = count + ' connected';
+        if (el) el.textContent = count + ' observer' + (count !== 1 ? 's' : '') + ' connected';
       });
     }
 
@@ -1519,6 +1571,10 @@ function initSoundPanel() {
   const container = document.getElementById('sound-file-inputs');
   if (!container) return;
   container.innerHTML = '';
+  // Prefetch all sound files when panel opens — ensures they're cached for iOS
+  if (audioCtx) SOUND_EVENTS.forEach(evt => {
+    const f = soundFiles[evt]; if (f) prefetchAudio(f);
+  });
   SOUND_EVENTS.forEach(evt => {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:8px;';
@@ -1550,7 +1606,14 @@ function toggleSoundEnabled(val) {
 function saveSoundSettings() {
   SOUND_EVENTS.forEach(evt => {
     const el = document.getElementById('snd-' + evt);
-    if (el) soundFiles[evt] = el.value.trim();
+    if (el) {
+      const newFile = el.value.trim();
+      if (newFile !== soundFiles[evt]) {
+        soundFiles[evt] = newFile;
+        delete audioBufferCache[newFile]; // clear cache so it re-fetches
+        if (audioCtx && newFile) prefetchAudio(newFile);
+      }
+    }
   });
   saveSoundPrefs();
   const btn = document.querySelector('#sound-panel-body button');
