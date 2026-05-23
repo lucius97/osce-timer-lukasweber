@@ -12,11 +12,11 @@
 // ---------------------------------------------------------
 
 var __OSCE_FIREBASE_CONFIG = {
-  apiKey:            "PASTE_YOUR_API_KEY_HERE",
-  authDomain:        "your-project.firebaseapp.com",
-  databaseURL:       "https://your-project-default-rtdb.firebaseio.com",
-  projectId:         "your-project",
-  storageBucket:     "your-project.appspot.com",
-  messagingSenderId: "YOUR_SENDER_ID",
-  appId:             "YOUR_APP_ID"
+  apiKey: "AIzaSyC5KlsWCwAczskZz8_UVjkB_GVo4VMfyBI",
+  authDomain: "osce-timer-zh.firebaseapp.com",
+  databaseURL: "https://osce-timer-zh-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "osce-timer-zh",
+  storageBucket: "osce-timer-zh.firebasestorage.app",
+  messagingSenderId: "153602333848",
+  appId: "1:153602333848:web:e8a7bbe12a0ad9588e04ed"
 };
