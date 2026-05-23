@@ -48,7 +48,6 @@ To use:
 <title>OSCE Timer</title>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
-<script src="config.js"></script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -453,6 +452,11 @@ To use:
     Observer mode — view only. Code: <strong id="obs-code-display">–</strong>
   </div>
 
+  <div id="ctrl-offline-banner" style="display:none; background:var(--amber-bg); border:0.5px solid rgba(186,117,23,0.3); border-radius:var(--radius); padding:10px 14px; margin-bottom:1rem; font-size:13px; color:var(--amber-text); align-items:center; gap:10px; flex-wrap:wrap;">
+    <span>⚠️ Controller appears to be offline — the session is still running. Timers continue automatically.</span>
+    <button onclick="promoteToController()" style="font-size:12px; padding:5px 12px; background:var(--amber-text); color:var(--amber-bg); border:none; border-radius:6px; cursor:pointer; margin-left:auto;">Take over as controller</button>
+  </div>
+
   <div class="dot-row" id="dot-row"></div>
 
   <div class="clock-card">
@@ -491,35 +495,30 @@ To use:
 </div>
 
 <script>
+// ─────────────────────────────────────────────────────────
+//  OSCE Timer — main logic
+// ─────────────────────────────────────────────────────────
+
 const FIREBASE_CONFIG = (typeof __OSCE_FIREBASE_CONFIG !== 'undefined')
-  ? __OSCE_FIREBASE_CONFIG
-  : null;
+  ? __OSCE_FIREBASE_CONFIG : null;
 
 let db = null;
 let sessionRef = null;
+let presenceRef = null;
 let sessionCode = null;
 let isController = false;
 let localState = null;
 let ticker = null;
+let presenceTicker = null;
 let lastSoundKeys = {};
 let audioCtx = null;
 let audioReady = false;
+let controllerLastSeen = null;   // timestamp of last heartbeat we received
+let controllerOfflineBannerShown = false;
 
-function initFirebase() {
-  if (db) return;
-  if (!FIREBASE_CONFIG) {
-    alert('Firebase config not found. Make sure config.js is in the same folder and contains your __OSCE_FIREBASE_CONFIG values. See setup instructions at top of osce-timer.html.');
-    return;
-  }
-  try {
-    if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
-    db = firebase.database();
-  } catch(e) {
-    console.error('Firebase init failed:', e);
-  }
-}
+// ── Audio ────────────────────────────────────────────────
 
-document.addEventListener('click', unlockAudio, { once: true });
+document.addEventListener('click',      unlockAudio, { once: true });
 document.addEventListener('touchstart', unlockAudio, { once: true });
 
 function unlockAudio() {
@@ -540,70 +539,160 @@ function tone(freq, dur, vol=0.38, delay=0) {
     o.connect(g); g.connect(audioCtx.destination);
     o.type = 'sine';
     o.frequency.setValueAtTime(freq, audioCtx.currentTime + delay);
-    g.gain.setValueAtTime(0, audioCtx.currentTime + delay);
+    g.gain.setValueAtTime(0,   audioCtx.currentTime + delay);
     g.gain.linearRampToValueAtTime(vol, audioCtx.currentTime + delay + 0.02);
     g.gain.setValueAtTime(vol, audioCtx.currentTime + delay + dur - 0.05);
-    g.gain.linearRampToValueAtTime(0, audioCtx.currentTime + delay + dur);
+    g.gain.linearRampToValueAtTime(0,   audioCtx.currentTime + delay + dur);
     o.start(audioCtx.currentTime + delay);
-    o.stop(audioCtx.currentTime + delay + dur);
+    o.stop( audioCtx.currentTime + delay + dur);
   } catch(e) {}
 }
 
-function playTwoToneStart() {
-  tone(660, 0.18, 0.4, 0);
-  tone(880, 0.22, 0.4, 0.22);
-}
-function playOneMinWarn() {
-  tone(520, 0.14, 0.38, 0);
-  tone(520, 0.14, 0.38, 0.22);
-  tone(520, 0.14, 0.38, 0.44);
-}
-function playStationEnd() {
-  tone(880, 0.1, 0.44, 0);
-  tone(880, 0.1, 0.44, 0.14);
-  tone(660, 0.1, 0.44, 0.28);
-  tone(440, 0.35, 0.44, 0.42);
-}
-function playBreakWarn() {
-  tone(660, 0.18, 0.35, 0);
-  tone(880, 0.22, 0.35, 0.22);
-}
+function playTwoToneStart() { tone(660,.18,.4,0); tone(880,.22,.4,.22); }
+function playOneMinWarn()   { tone(520,.14,.38,0); tone(520,.14,.38,.22); tone(520,.14,.38,.44); }
+function playStationEnd()   { tone(880,.1,.44,0); tone(880,.1,.44,.14); tone(660,.1,.44,.28); tone(440,.35,.44,.42); }
+function playBreakWarn()    { tone(660,.18,.35,0); tone(880,.22,.35,.22); }
+
+// ── Utilities ────────────────────────────────────────────
 
 function showPage(id) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.getElementById(id).classList.add('active');
 }
-
 function generateCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let code = '';
-  for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
-  return code;
+  let c = '';
+  for (let i=0;i<6;i++) c += chars[Math.floor(Math.random()*chars.length)];
+  return c;
 }
-
 function showError(id, msg) {
   const el = document.getElementById(id);
-  el.textContent = msg;
-  el.style.display = 'block';
+  if (!el) return;
+  el.textContent = msg; el.style.display = 'block';
 }
 function hideError(id) {
   const el = document.getElementById(id);
   if (el) el.style.display = 'none';
 }
 
+// ── Firebase init ────────────────────────────────────────
+
+function initFirebase() {
+  if (db) return true;
+  if (!FIREBASE_CONFIG) {
+    alert('Firebase config not found.\n\nMake sure config.js is in the same folder as this HTML file.\nSee setup instructions at the top of osce-timer.html.');
+    return false;
+  }
+  try {
+    if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+    db = firebase.database();
+    return true;
+  } catch(e) {
+    console.error('Firebase init failed:', e);
+    return false;
+  }
+}
+
+// ── Controller identity (survives refresh) ───────────────
+
+function controllerKey(code) { return 'osce_ctrl_' + code; }
+
+function claimController(code) {
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2);
+  localStorage.setItem(controllerKey(code), id);
+  return id;
+}
+function getStoredControllerId(code) {
+  return localStorage.getItem(controllerKey(code));
+}
+function clearControllerClaim(code) {
+  localStorage.removeItem(controllerKey(code));
+}
+
+// ── Presence / heartbeat ─────────────────────────────────
+
+function startPresenceHeartbeat() {
+  if (!sessionRef || !isController) return;
+  presenceRef = sessionRef.child('presence');
+
+  function beat() {
+    if (!sessionRef) return;
+    presenceRef.set({ ts: Date.now(), id: getStoredControllerId(sessionCode) });
+  }
+  beat();
+  presenceTicker = setInterval(beat, 5000);
+
+  // Do NOT use onDisconnect().remove() on the whole session —
+  // that would wipe the session when controller closes the tab.
+  // Instead just let presence go stale; observers detect it.
+  presenceRef.onDisconnect().set({ ts: 0, id: '' });
+}
+
+function stopPresenceHeartbeat() {
+  clearInterval(presenceTicker);
+  presenceTicker = null;
+}
+
+function watchControllerPresence() {
+  if (!sessionRef || isController) return;
+  sessionRef.child('presence').on('value', snap => {
+    const data = snap.val();
+    controllerLastSeen = (data && data.ts) ? data.ts : null;
+    updateControllerOfflineBanner();
+  });
+}
+
+function updateControllerOfflineBanner() {
+  const banner = document.getElementById('ctrl-offline-banner');
+  if (!banner) return;
+  if (isController) { banner.style.display = 'none'; return; }
+
+  const stale = !controllerLastSeen || (Date.now() - controllerLastSeen > 12000);
+  if (stale) {
+    banner.style.display = 'flex';
+    controllerOfflineBannerShown = true;
+  } else {
+    banner.style.display = 'none';
+  }
+}
+
+// Poll staleness every 6s (heartbeat is every 5s, grace is 12s)
+setInterval(updateControllerOfflineBanner, 6000);
+
+// ── Promote observer to controller ───────────────────────
+
+async function promoteToController() {
+  if (isController || !sessionRef) return;
+  if (!confirm('Take over as controller for this session?\n\nYou will be able to pause, skip and end stations.')) return;
+
+  const id = claimController(sessionCode);
+  await sessionRef.child('controllerToken').set(id);
+  isController = true;
+
+  document.getElementById('ctrl-offline-banner').style.display = 'none';
+  document.getElementById('observer-banner').style.display = 'none';
+  document.getElementById('ctrl-buttons').style.display = 'flex';
+  document.getElementById('ctrl-share-card').style.display = 'block';
+
+  startPresenceHeartbeat();
+}
+
+// ── Create session ───────────────────────────────────────
+
 async function createSession() {
   hideError('setup-error');
-  initFirebase();
-  if (!db) { showError('setup-error', 'Could not connect to sync service. Check your internet connection.'); return; }
+  if (!initFirebase()) return;
 
-  const stations = Math.max(2, Math.min(12, parseInt(document.getElementById('cfg-stations').value) || 5));
+  const stations   = Math.max(2, Math.min(12, parseInt(document.getElementById('cfg-stations').value) || 5));
   const stationSecs = (parseInt(document.getElementById('cfg-min').value) || 8) * 60;
-  const breakSecs = parseInt(document.getElementById('cfg-break').value) || 60;
-  const warnSecs = parseInt(document.getElementById('cfg-warn').value) || 60;
-  const name = document.getElementById('cfg-name').value.trim() || 'OSCE Session';
+  const breakSecs  = parseInt(document.getElementById('cfg-break').value) || 60;
+  const warnSecs   = parseInt(document.getElementById('cfg-warn').value) || 60;
+  const name       = document.getElementById('cfg-name').value.trim() || 'OSCE Session';
 
   sessionCode = generateCode();
-  sessionRef = db.ref('sessions/' + sessionCode);
+  sessionRef  = db.ref('sessions/' + sessionCode);
+
+  const controllerId = claimController(sessionCode);
 
   const initState = {
     cfg: { stations, stationSecs, breakSecs, warnSecs, name },
@@ -614,6 +703,8 @@ async function createSession() {
     pausedAt: null,
     totalPausedMs: 0,
     soundLog: {},
+    controllerToken: controllerId,
+    createdAt: Date.now(),
     ts: Date.now()
   };
 
@@ -622,9 +713,9 @@ async function createSession() {
 
   try {
     await sessionRef.set(initState);
-    await sessionRef.onDisconnect().remove();
+    // Session persists even if controller disconnects — no onDisconnect remove
     isController = true;
-    localState = initState;
+    localState   = initState;
 
     document.getElementById('share-code').textContent = sessionCode;
     const link = location.href.split('#')[0] + '#' + sessionCode;
@@ -636,13 +727,14 @@ async function createSession() {
   }
 }
 
+// ── Join session (observer) ──────────────────────────────
+
 async function joinSession() {
   hideError('join-error');
   const code = document.getElementById('join-code').value.trim().toUpperCase();
   if (code.length !== 6) { showError('join-error', 'Please enter a 6-character session code.'); return; }
 
-  initFirebase();
-  if (!db) { showError('join-error', 'Could not connect. Check your internet connection.'); return; }
+  if (!initFirebase()) return;
 
   showPage('page-connecting');
   document.getElementById('connecting-msg').textContent = 'Joining session ' + code + '…';
@@ -655,16 +747,27 @@ async function joinSession() {
       showError('join-error', 'Session not found. Check the code and try again.');
       return;
     }
+
     sessionCode = code;
-    sessionRef = ref;
-    isController = false;
-    localState = snap.val();
+    sessionRef  = ref;
+    localState  = snap.val();
+
+    // Check if this device is actually the controller (e.g. after a refresh)
+    const storedId = getStoredControllerId(code);
+    if (storedId && localState.controllerToken && storedId === localState.controllerToken) {
+      isController = true;
+    } else {
+      isController = false;
+    }
+
     startObserving();
   } catch(e) {
     showPage('page-observer-join');
     showError('join-error', 'Connection error: ' + e.message);
   }
 }
+
+// ── Start / observe ──────────────────────────────────────
 
 function startSession() {
   if (!sessionRef || !isController) return;
@@ -686,11 +789,14 @@ function startSession() {
 
 function startObserving() {
   initTimerPage();
+
   sessionRef.on('value', snap => {
     if (!snap.exists()) {
+      // Session was explicitly deleted (controller called endSession)
       clearInterval(ticker);
+      clearInterval(presenceTicker);
       showPage('page-ended');
-      document.getElementById('ended-msg').textContent = 'The controller ended the session.';
+      document.getElementById('ended-msg').textContent = 'The session was ended by the controller.';
       return;
     }
     const prev = localState ? localState.phase + '_' + localState.stationIdx : '';
@@ -699,188 +805,179 @@ function startObserving() {
     if (prev !== next) lastSoundKeys = {};
     renderTimer();
   });
+
+  if (isController) {
+    startPresenceHeartbeat();
+  } else {
+    watchControllerPresence();
+  }
 }
+
+// ── Timer page init ──────────────────────────────────────
 
 function initTimerPage() {
   const cfg = localState.cfg;
-
   document.getElementById('timer-session-name').textContent = cfg.name || 'OSCE Timer';
-  document.getElementById('running-code').textContent = sessionCode;
+  document.getElementById('running-code').textContent  = sessionCode;
   document.getElementById('running-link').value = location.href.split('#')[0] + '#' + sessionCode;
   document.getElementById('obs-code-display').textContent = sessionCode;
 
   if (isController) {
-    document.getElementById('ctrl-buttons').style.display = 'flex';
+    document.getElementById('ctrl-buttons').style.display    = 'flex';
     document.getElementById('ctrl-share-card').style.display = 'block';
-    document.getElementById('observer-banner').style.display = 'none';
+    document.getElementById('observer-banner').style.display  = 'none';
+    document.getElementById('ctrl-offline-banner').style.display = 'none';
   } else {
-    document.getElementById('ctrl-buttons').style.display = 'none';
+    document.getElementById('ctrl-buttons').style.display    = 'none';
     document.getElementById('ctrl-share-card').style.display = 'none';
-    document.getElementById('observer-banner').style.display = 'flex';
+    document.getElementById('observer-banner').style.display  = 'flex';
   }
 
   buildDots();
   showPage('page-timer');
-
   if (ticker) clearInterval(ticker);
   ticker = setInterval(renderTimer, 250);
   renderTimer();
 }
 
+// ── Dot helpers ──────────────────────────────────────────
+
 function buildDots() {
   const row = document.getElementById('dot-row');
   row.innerHTML = '';
-  const n = localState.cfg.stations;
-  for (let i = 0; i < n; i++) {
+  for (let i = 0; i < localState.cfg.stations; i++) {
     const d = document.createElement('div');
-    d.className = 'dot';
-    d.id = 'dot-' + i;
-    d.textContent = i + 1;
+    d.className = 'dot'; d.id = 'dot-' + i; d.textContent = i + 1;
     row.appendChild(d);
   }
   updateDots();
 }
-
 function updateDots() {
   if (!localState) return;
-  const n = localState.cfg.stations;
-  for (let i = 0; i < n; i++) {
+  for (let i = 0; i < localState.cfg.stations; i++) {
     const d = document.getElementById('dot-' + i);
     if (!d) continue;
-    const done = i < localState.completedStations;
-    const active = i === localState.stationIdx && localState.phase === 'station';
+    const done    = i < localState.completedStations;
+    const active  = i === localState.stationIdx && localState.phase === 'station';
     const onBreak = i === localState.stationIdx && localState.phase === 'break';
-    d.className = 'dot' + (done ? ' done' : active ? ' active' : onBreak ? ' on-break' : '');
+    d.className   = 'dot' + (done?'  done': active?' active': onBreak?' on-break':'');
   }
 }
+
+// ── Timing helpers ───────────────────────────────────────
 
 function phaseElapsed() {
   if (!localState || !localState.phaseStartedAt) return 0;
   const now = localState.pausedAt ? localState.pausedAt : Date.now();
   return now - localState.phaseStartedAt - (localState.totalPausedMs || 0);
 }
-
 function soundOnce(key, fn) {
   if (lastSoundKeys[key]) return;
   lastSoundKeys[key] = true;
   fn();
 }
 
+// ── Render ───────────────────────────────────────────────
+
 function renderTimer() {
   if (!localState || localState.phase === 'waiting') return;
   if (localState.phase === 'ended') {
     clearInterval(ticker);
+    stopPresenceHeartbeat();
     showPage('page-ended');
-    document.getElementById('ended-msg').textContent = 'All ' + localState.cfg.stations + ' stations completed.';
+    document.getElementById('ended-msg').textContent =
+      'All ' + localState.cfg.stations + ' stations completed.';
     return;
   }
 
   updateDots();
 
-  const cfg = localState.cfg;
-  const isBreak = localState.phase === 'break';
-  const totalMs = (isBreak ? cfg.breakSecs : cfg.stationSecs) * 1000;
-  const elapsed = phaseElapsed();
+  const cfg      = localState.cfg;
+  const isBreak  = localState.phase === 'break';
+  const totalMs  = (isBreak ? cfg.breakSecs : cfg.stationSecs) * 1000;
+  const elapsed  = phaseElapsed();
   const remaining = Math.max(0, totalMs - elapsed);
-  const secsLeft = Math.ceil(remaining / 1000);
-  const dMins = Math.floor(remaining / 60000);
-  const dSecs = Math.floor((remaining % 60000) / 1000);
-  const timeStr = String(dMins).padStart(2,'0') + ':' + String(dSecs).padStart(2,'0');
-  const frac = totalMs > 0 ? remaining / totalMs : 0;
+  const secsLeft  = Math.ceil(remaining / 1000);
+  const dMins     = Math.floor(remaining / 60000);
+  const dSecs     = Math.floor((remaining % 60000) / 1000);
+  const timeStr   = String(dMins).padStart(2,'0') + ':' + String(dSecs).padStart(2,'0');
+  const frac      = totalMs > 0 ? remaining / totalMs : 0;
 
   document.getElementById('big-time').textContent = timeStr;
-  document.getElementById('prog-fill').style.width = (frac * 100).toFixed(1) + '%';
+  document.getElementById('prog-fill').style.width = (frac*100).toFixed(1) + '%';
 
-  const bt = document.getElementById('big-time');
-  const pf = document.getElementById('prog-fill');
-  const badge = document.getElementById('timer-badge');
-  const sub = document.getElementById('timer-sub');
+  const bt      = document.getElementById('big-time');
+  const pf      = document.getElementById('prog-fill');
+  const badge   = document.getElementById('timer-badge');
+  const sub     = document.getElementById('timer-sub');
   const phaseTag = document.getElementById('phase-tag');
-  const stName = document.getElementById('station-name');
+  const stName  = document.getElementById('station-name');
 
   if (localState.pausedAt) {
-    bt.className = 'big-time';
-    pf.className = 'prog-fill';
-    badge.className = 'badge badge-gray';
-    badge.textContent = '⏸ Paused';
+    bt.className = 'big-time'; pf.className = 'prog-fill';
+    badge.className = 'badge badge-gray'; badge.textContent = '⏸ Paused';
     sub.textContent = 'Session paused';
     document.getElementById('pause-btn').textContent = '▶ Resume';
     return;
   }
-
   document.getElementById('pause-btn').textContent = '⏸ Pause';
 
   if (isBreak) {
     phaseTag.textContent = 'BREAK';
-    const breakNum = localState.stationIdx;
-    stName.textContent = breakNum === 0
+    const bn = localState.stationIdx;
+    stName.textContent = bn === 0
       ? 'Opening break — station 1 starting soon'
-      : 'Break ' + breakNum + ' of ' + (cfg.stations - 1) + ' — station ' + (localState.stationIdx + 1) + ' next';
-    bt.className = 'big-time teal';
-    pf.className = 'prog-fill';
-    badge.className = 'badge badge-teal';
-    badge.textContent = 'Break';
-    sub.textContent = 'Station ' + (localState.stationIdx + 1) + ' coming up';
+      : 'Break ' + bn + ' of ' + (cfg.stations-1) + ' — station ' + (localState.stationIdx+1) + ' next';
+    bt.className = 'big-time teal'; pf.className = 'prog-fill';
+    badge.className = 'badge badge-teal'; badge.textContent = 'Break';
+    sub.textContent = 'Station ' + (localState.stationIdx+1) + ' coming up';
 
     const warnAt = Math.min(60, cfg.breakSecs - 5);
-    if (secsLeft <= warnAt + 1 && secsLeft > warnAt - 2) {
+    if (secsLeft <= warnAt+1 && secsLeft > warnAt-2)
       soundOnce('break-warn-' + localState.stationIdx, playBreakWarn);
-    }
-    if (secsLeft <= 3 && secsLeft >= 1) {
+    if (secsLeft <= 3 && secsLeft >= 1)
       soundOnce('break-end-' + localState.stationIdx, playBreakWarn);
-    }
 
-    if (isController && remaining <= 0) {
-      advanceToStation();
-    }
+    if (isController && remaining <= 0) advanceToStation();
+
   } else {
-    phaseTag.textContent = 'STATION ' + (localState.stationIdx + 1) + ' OF ' + cfg.stations;
-    stName.textContent = cfg.name ? cfg.name + ' · Station ' + (localState.stationIdx + 1) : 'Station ' + (localState.stationIdx + 1);
+    phaseTag.textContent = 'STATION ' + (localState.stationIdx+1) + ' OF ' + cfg.stations;
+    stName.textContent = cfg.name
+      ? cfg.name + ' · Station ' + (localState.stationIdx+1)
+      : 'Station ' + (localState.stationIdx+1);
 
-    const isWarn = secsLeft <= cfg.warnSecs && secsLeft > 10;
+    const isWarn   = secsLeft <= cfg.warnSecs && secsLeft > 10;
     const isDanger = secsLeft <= 10 && secsLeft > 0;
 
     if (isDanger) {
-      bt.className = 'big-time red pulse';
-      pf.className = 'prog-fill red';
-      badge.className = 'badge badge-red';
-      badge.textContent = '⚠ Time up soon';
+      bt.className='big-time red pulse'; pf.className='prog-fill red';
+      badge.className='badge badge-red'; badge.textContent='⚠ Time up soon';
     } else if (isWarn) {
-      bt.className = 'big-time amber';
-      pf.className = 'prog-fill amber';
-      badge.className = 'badge badge-amber';
-      badge.textContent = cfg.warnSecs + 's warning';
+      bt.className='big-time amber'; pf.className='prog-fill amber';
+      badge.className='badge badge-amber'; badge.textContent=cfg.warnSecs+'s warning';
     } else {
-      bt.className = 'big-time';
-      pf.className = 'prog-fill';
-      badge.className = 'badge badge-teal';
-      badge.textContent = 'Running';
+      bt.className='big-time'; pf.className='prog-fill';
+      badge.className='badge badge-teal'; badge.textContent='Running';
     }
-    sub.textContent = 'Station ' + (localState.stationIdx + 1) + ' of ' + cfg.stations;
+    sub.textContent = 'Station ' + (localState.stationIdx+1) + ' of ' + cfg.stations;
 
-    if (secsLeft <= cfg.warnSecs + 1 && secsLeft > cfg.warnSecs - 2) {
+    if (secsLeft <= cfg.warnSecs+1 && secsLeft > cfg.warnSecs-2)
       soundOnce('warn-' + localState.stationIdx, playOneMinWarn);
-    }
-    if (secsLeft <= 4 && secsLeft >= 1) {
+    if (secsLeft <= 4 && secsLeft >= 1)
       soundOnce('end-' + localState.stationIdx, playStationEnd);
-    }
 
-    if (isController && remaining <= 0) {
-      advanceToBreakOrEnd();
-    }
+    if (isController && remaining <= 0) advanceToBreakOrEnd();
   }
 }
+
+// ── Advance helpers ──────────────────────────────────────
 
 function advanceToStation() {
   if (!isController || !sessionRef) return;
   const now = Date.now();
   const update = {
-    phase: 'station',
-    phaseStartedAt: now,
-    pausedAt: null,
-    totalPausedMs: 0,
-    soundLog: {},
-    ts: now
+    phase: 'station', phaseStartedAt: now,
+    pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now
   };
   Object.assign(localState, update);
   sessionRef.update(update);
@@ -897,27 +994,26 @@ function advanceToBreakOrEnd() {
     Object.assign(localState, update);
     sessionRef.update(update);
     clearInterval(ticker);
+    stopPresenceHeartbeat();
     soundOnce('session-end', playStationEnd);
     showPage('page-ended');
-    document.getElementById('ended-msg').textContent = 'All ' + localState.cfg.stations + ' stations completed.';
+    document.getElementById('ended-msg').textContent =
+      'All ' + localState.cfg.stations + ' stations completed.';
     return;
   }
   const now = Date.now();
   const update = {
-    phase: 'break',
-    stationIdx: localState.stationIdx + 1,
-    completedStations: newCompleted,
-    phaseStartedAt: now,
-    pausedAt: null,
-    totalPausedMs: 0,
-    soundLog: {},
-    ts: now
+    phase: 'break', stationIdx: localState.stationIdx + 1,
+    completedStations: newCompleted, phaseStartedAt: now,
+    pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now
   };
   Object.assign(localState, update);
   sessionRef.update(update);
   lastSoundKeys = {};
   renderTimer();
 }
+
+// ── Controls ─────────────────────────────────────────────
 
 function skipPhase() {
   if (!isController) return;
@@ -931,17 +1027,11 @@ function togglePause() {
   const now = Date.now();
   if (localState.pausedAt) {
     const added = now - localState.pausedAt;
-    const update = {
-      pausedAt: null,
-      totalPausedMs: (localState.totalPausedMs || 0) + added,
-      ts: now
-    };
-    Object.assign(localState, update);
-    sessionRef.update(update);
+    const update = { pausedAt: null, totalPausedMs: (localState.totalPausedMs||0)+added, ts: now };
+    Object.assign(localState, update); sessionRef.update(update);
   } else {
     const update = { pausedAt: now, ts: now };
-    Object.assign(localState, update);
-    sessionRef.update(update);
+    Object.assign(localState, update); sessionRef.update(update);
   }
   renderTimer();
 }
@@ -949,17 +1039,22 @@ function togglePause() {
 function endSession() {
   if (!isController || !sessionRef) return;
   if (!confirm('End the session for all observers too?')) return;
+  clearControllerClaim(sessionCode);
   sessionRef.remove();
   clearInterval(ticker);
+  stopPresenceHeartbeat();
   showPage('page-ended');
   document.getElementById('ended-msg').textContent = 'Session ended by controller.';
 }
 
 function cancelSession() {
   if (sessionRef) sessionRef.remove();
+  clearControllerClaim(sessionCode);
   sessionCode = null; sessionRef = null;
   showPage('page-controller-setup');
 }
+
+// ── Copy helpers ──────────────────────────────────────────
 
 function copyLink() {
   navigator.clipboard.writeText(document.getElementById('share-link').value).then(() => {
@@ -971,23 +1066,28 @@ function copyLink() {
 function copyRunningLink() {
   navigator.clipboard.writeText(document.getElementById('running-link').value).then(() => {
     const btns = document.querySelectorAll('#ctrl-share-card button');
-    btns.forEach(b => { b.textContent = 'Copied!'; });
-    setTimeout(() => { btns.forEach(b => { b.textContent = 'Copy'; }); }, 2000);
+    btns.forEach(b => b.textContent = 'Copied!');
+    setTimeout(() => { btns.forEach(b => b.textContent = 'Copy'); }, 2000);
   });
 }
+
+// ── Deep-link (hash = session code) ─────────────────────
 
 function checkHashCode() {
   const hash = location.hash.slice(1).trim().toUpperCase();
   if (hash.length === 6 && /^[A-Z0-9]+$/.test(hash)) {
     document.getElementById('join-code').value = hash;
+    // Auto-try to restore controller role if this device created it
+    const storedId = getStoredControllerId(hash);
+    if (storedId) {
+      // Will be verified against Firebase after join
+    }
     showPage('page-observer-join');
+    joinSession();
   }
 }
 
-window.addEventListener('load', () => {
-  initFirebase();
-  checkHashCode();
-});
+window.addEventListener('load', () => { initFirebase(); checkHashCode(); });
 window.addEventListener('hashchange', checkHashCode);
 </script>
 </body>
