@@ -511,6 +511,7 @@ let isController = false;
 let localState = null;
 let ticker = null;
 let lastSoundKeys = {};
+let advancing = false; // guard against double-advance
 let audioCtx = null;
 let audioReady = false;
 
@@ -792,7 +793,7 @@ function startSession() {
   };
   Object.assign(localState, update);
   sessionRef.update(update);
-  initTimerPage();
+  startObserving(); // controller also subscribes to Firebase so state is always in sync
 }
 
 function startObserving() {
@@ -809,7 +810,10 @@ function startObserving() {
     const prev = localState ? localState.phase + '_' + localState.stationIdx : '';
     localState = snap.val();
     const next = localState.phase + '_' + localState.stationIdx;
-    if (prev !== next) lastSoundKeys = {};
+    if (prev !== next) {
+      lastSoundKeys = {};
+      advancing = false; // Firebase confirmed the advance — safe to advance again
+    }
     renderTimer();
   });
 
@@ -980,32 +984,26 @@ function renderTimer() {
 // ── Advance helpers ──────────────────────────────────────
 
 function advanceToStation() {
-  if (!isController || !sessionRef) return;
+  if (!isController || !sessionRef || advancing) return;
+  advancing = true;
   const now = Date.now();
   const update = {
     phase: 'station', phaseStartedAt: now,
     pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now
   };
-  Object.assign(localState, update);
-  sessionRef.update(update);
+  sessionRef.update(update).then(() => { advancing = false; });
   lastSoundKeys = {};
   soundOnce('station-start-' + localState.stationIdx, playTwoToneStart);
-  renderTimer();
 }
 
 function advanceToBreakOrEnd() {
-  if (!isController || !sessionRef) return;
+  if (!isController || !sessionRef || advancing) return;
+  advancing = true;
   const newCompleted = localState.stationIdx + 1;
   if (newCompleted >= localState.cfg.stations) {
     const update = { phase: 'ended', ts: Date.now() };
-    Object.assign(localState, update);
-    sessionRef.update(update);
-    clearInterval(ticker);
-    stopPresenceHeartbeat();
+    sessionRef.update(update).then(() => { advancing = false; });
     soundOnce('session-end', playStationEnd);
-    showPage('page-ended');
-    document.getElementById('ended-msg').textContent =
-      'All ' + localState.cfg.stations + ' stations completed.';
     return;
   }
   const now = Date.now();
@@ -1014,10 +1012,8 @@ function advanceToBreakOrEnd() {
     completedStations: newCompleted, phaseStartedAt: now,
     pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now
   };
-  Object.assign(localState, update);
-  sessionRef.update(update);
+  sessionRef.update(update).then(() => { advancing = false; });
   lastSoundKeys = {};
-  renderTimer();
 }
 
 // ── Controls ─────────────────────────────────────────────
