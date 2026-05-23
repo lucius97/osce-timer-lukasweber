@@ -1400,8 +1400,6 @@ function renderTimer() {
     if (isController) {
       if (secsLeft <= cfg.warnSecs && secsLeft > cfg.warnSecs - 2)
         fireSoundCue('warning', 'warn-' + idx);
-      if (secsLeft <= 3 && secsLeft >= 1)
-        fireSoundCue('session-end', 'end-' + idx);
     }
 
     if (remaining <= 0) scheduleAdvance('change');
@@ -1496,6 +1494,7 @@ function advanceToChangeOrEnd() {
   };
   sessionRef.update(update).then(() => { advancing = false; });
   lastSoundKeys = {};
+  fireSoundCue('session-end', 'end-' + (nextIdx - 1));
   updateSessionIndex('change', nextIdx);
 }
 
