@@ -334,13 +334,16 @@ To use:
   <div id="session-list-card" class="card" style="margin-bottom:1rem;">
     <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
       <h3 style="font-size:13px; color:var(--text2); text-transform:uppercase; letter-spacing:.05em;">Live sessions</h3>
-      <span id="session-list-status" style="font-size:12px; color:var(--text3);">Loading…</span>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span id="session-list-status" style="font-size:12px; color:var(--text3);">Loading…</span>
+        <button onclick="stopSessionList(); if(initFirebase()) startSessionList();" style="font-size:11px; padding:3px 8px; border-radius:6px;">↺ Refresh</button>
+      </div>
     </div>
     <div id="session-list-items">
       <!-- populated by JS -->
     </div>
     <div id="session-list-empty" style="display:none; text-align:center; padding:1rem 0; font-size:13px; color:var(--text3);">
-      No active sessions found
+      No active sessions
     </div>
   </div>
 
@@ -1179,65 +1182,104 @@ async function joinSessionByCode(code) {
 
 let sessionListRef = null;
 
+function renderSessionList(index) {
+  const items  = document.getElementById('session-list-items');
+  const empty  = document.getElementById('session-list-empty');
+  const status = document.getElementById('session-list-status');
+  if (!items) return;
+  items.innerHTML = '';
+
+  const codes = Object.keys(index).filter(k => index[k] && index[k].phase !== 'ended');
+
+  status.textContent = codes.length
+    ? codes.length + ' active session' + (codes.length !== 1 ? 's' : '')
+    : 'No active sessions';
+
+  if (codes.length === 0) {
+    empty.style.display = 'block';
+    return;
+  }
+  empty.style.display = 'none';
+
+  const order = { station: 0, break: 1, waiting: 2 };
+  codes.sort((a, b) => (order[index[a].phase] || 3) - (order[index[b].phase] || 3));
+
+  codes.forEach(code => {
+    const s = index[code];
+    const phase = s.phase || 'waiting';
+
+    let badgeClass = 'sib-wait', badgeText = 'Waiting';
+    if (phase === 'break')   { badgeClass = 'sib-break'; badgeText = 'On break'; }
+    if (phase === 'station') { badgeClass = 'sib-run';   badgeText = 'Running'; }
+
+    const stationInfo = (phase === 'station' || phase === 'break')
+      ? 'Station ' + ((s.stationIdx || 0) + 1) + ' of ' + s.stations
+      : (s.stations || '?') + ' stations · ' + Math.round((s.stationSecs || 0) / 60) + ' min each';
+
+    const div = document.createElement('div');
+    div.className = 'session-item';
+    div.innerHTML =
+      '<div class="session-item-info">' +
+        '<div class="session-item-name">' + (s.name || 'OSCE Session') + '</div>' +
+        '<div class="session-item-meta">' + stationInfo + ' &nbsp;·&nbsp; Code: <strong>' + code + '</strong></div>' +
+      '</div>' +
+      '<span class="session-item-badge ' + badgeClass + '">' + badgeText + '</span>';
+    div.onclick = () => {
+      history.replaceState(null, '', '#' + code);
+      joinSessionByCode(code);
+    };
+    items.appendChild(div);
+  });
+}
+
 function startSessionList() {
   if (!db) return;
+
+  // Listen to sessionIndex (lightweight, only updates on phase change)
   sessionListRef = db.ref('sessionIndex');
-
-  sessionListRef.on('value', snap => {
-    const items  = document.getElementById('session-list-items');
-    const empty  = document.getElementById('session-list-empty');
-    const status = document.getElementById('session-list-status');
-    if (!items) return;
-    items.innerHTML = '';
-
-    const index = snap.exists() ? snap.val() : {};
-    const codes = Object.keys(index).filter(k => index[k] && index[k].phase !== 'ended');
-
-    status.textContent = codes.length
-      ? codes.length + ' active session' + (codes.length !== 1 ? 's' : '')
-      : 'No active sessions';
-
-    if (codes.length === 0) {
-      empty.style.display = 'block';
-      return;
+  sessionListRef.on('value',
+    snap => {
+      renderSessionList(snap.exists() ? snap.val() : {});
+    },
+    err => {
+      // sessionIndex read failed (likely rules) — fall back to reading /sessions directly
+      console.warn('sessionIndex read failed, falling back to /sessions:', err.message);
+      fallbackSessionList();
     }
-    empty.style.display = 'none';
+  );
+}
 
-    // Sort: running first, then break, then waiting
-    const order = { station: 0, break: 1, waiting: 2 };
-    codes.sort((a, b) => (order[index[a].phase] || 3) - (order[index[b].phase] || 3));
-
-    codes.forEach(code => {
-      const s = index[code];
-      const phase = s.phase || 'waiting';
-
-      let badgeClass = 'sib-wait', badgeText = 'Waiting';
-      if (phase === 'break')   { badgeClass = 'sib-break'; badgeText = 'On break'; }
-      if (phase === 'station') { badgeClass = 'sib-run';   badgeText = 'Running'; }
-
-      const stationInfo = (phase === 'station' || phase === 'break')
-        ? 'Station ' + (s.stationIdx + 1) + ' of ' + s.stations
-        : s.stations + ' stations · ' + Math.round(s.stationSecs / 60) + ' min each';
-
-      const div = document.createElement('div');
-      div.className = 'session-item';
-      div.innerHTML =
-        '<div class="session-item-info">' +
-          '<div class="session-item-name">' + (s.name || 'OSCE Session') + '</div>' +
-          '<div class="session-item-meta">' + stationInfo + ' &nbsp;·&nbsp; Code: <strong>' + code + '</strong></div>' +
-        '</div>' +
-        '<span class="session-item-badge ' + badgeClass + '">' + badgeText + '</span>';
-      div.onclick = () => {
-        history.replaceState(null, '', '#' + code);
-        joinSessionByCode(code);
-      };
-      items.appendChild(div);
-    });
-  }, err => {
-    const status = document.getElementById('session-list-status');
-    if (status) status.textContent = 'Could not load sessions';
-    console.warn('Session list error:', err);
-  });
+function fallbackSessionList() {
+  // Fallback: read /sessions directly and extract summary fields
+  // Less efficient but works without sessionIndex rules
+  if (!db) return;
+  if (sessionListRef) { sessionListRef.off(); }
+  sessionListRef = db.ref('sessions');
+  sessionListRef.on('value',
+    snap => {
+      if (!snap.exists()) { renderSessionList({}); return; }
+      const raw = snap.val();
+      // Build a sessionIndex-shaped object from the full session data
+      const index = {};
+      Object.keys(raw).forEach(code => {
+        const s = raw[code];
+        if (!s || !s.cfg) return;
+        index[code] = {
+          name:        s.cfg.name || 'OSCE Session',
+          phase:       s.phase || 'waiting',
+          stationIdx:  s.stationIdx || 0,
+          stations:    s.cfg.stations,
+          stationSecs: s.cfg.stationSecs
+        };
+      });
+      renderSessionList(index);
+    },
+    err => {
+      const status = document.getElementById('session-list-status');
+      if (status) status.textContent = 'Could not load — check Firebase rules';
+      console.error('Session list fallback error:', err.message);
+    }
+  );
 }
 
 function stopSessionList() {
