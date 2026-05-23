@@ -884,10 +884,11 @@ async function createSession() {
 
 // ── Join session (observer) ──────────────────────────────
 
-// Thin wrapper kept for the back button on page-observer-join
+// Thin wrapper — join-code input no longer in DOM, use home-code
 function joinSession() {
-  const code = document.getElementById('join-code').value.trim().toUpperCase();
-  if (code.length !== 6) { showError('join-error', 'Please enter a 6-character session code.'); return; }
+  const el = document.getElementById('home-code');
+  const code = el ? el.value.trim().toUpperCase() : '';
+  if (code.length !== 6) { showError('home-join-error', 'Please enter a 6-character code.'); return; }
   history.replaceState(null, '', '#' + code);
   joinSessionByCode(code);
 }
@@ -1085,10 +1086,10 @@ function updateDots() {
   for (let i = 0; i < localState.cfg.stations; i++) {
     const d = document.getElementById('dot-' + i);
     if (!d) continue;
-    const done    = i < localState.completedStations;
-    const active  = i === localState.stationIdx && localState.phase === 'station';
-    const onBreak = i === localState.stationIdx && localState.phase === 'break';
-    d.className   = 'dot' + (done?'  done': active?' active': onBreak?' on-break':'');
+    const done     = i < localState.completedStations;
+    const active   = i === localState.stationIdx && localState.phase === 'station';
+    const onChange = i === localState.stationIdx && (localState.phase === 'change' || localState.phase === 'prep');
+    d.className    = 'dot' + (done ? ' done' : active ? ' active' : onChange ? ' on-break' : '');
   }
 }
 
@@ -1730,10 +1731,11 @@ function renderSessionList(index) {
     const phase = s.phase || 'waiting';
 
     let badgeClass = 'sib-wait', badgeText = 'Waiting';
-    if (phase === 'break')   { badgeClass = 'sib-break'; badgeText = 'On break'; }
+    if (phase === 'change')  { badgeClass = 'sib-break'; badgeText = 'Change'; }
+    if (phase === 'prep')    { badgeClass = 'sib-done';  badgeText = 'Prep'; }
     if (phase === 'station') { badgeClass = 'sib-run';   badgeText = 'Running'; }
 
-    const stationInfo = (phase === 'station' || phase === 'break')
+    const stationInfo = (phase === 'station' || phase === 'change' || phase === 'prep')
       ? 'Station ' + ((s.stationIdx || 0) + 1) + ' of ' + s.stations
       : (s.stations || '?') + ' stations · ' + Math.round((s.stationSecs || 0) / 60) + ' min each';
 
