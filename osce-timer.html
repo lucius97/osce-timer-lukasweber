@@ -380,7 +380,7 @@ To use:
     <div class="form-row">
       <div class="form-group" style="margin-bottom:0">
         <label>Stations</label>
-        <input type="number" id="cfg-stations" min="2" max="12" value="7" />
+        <input type="number" id="cfg-stations" min="2" max="12" value="5" />
       </div>
       <div class="form-group" style="margin-bottom:0">
         <label>Session name (optional)</label>
@@ -393,21 +393,29 @@ To use:
     <div class="form-group">
       <label>Station duration</label>
       <div class="slider-row">
-        <input type="range" id="cfg-min" min="1" max="20" value="4" step="1" oninput="document.getElementById('cfg-min-out').textContent=this.value+' min'" />
-        <span class="slider-val" id="cfg-min-out">4 min</span>
+        <input type="range" id="cfg-min" min="1" max="20" value="8" step="1" oninput="document.getElementById('cfg-min-out').textContent=this.value+' min'" />
+        <span class="slider-val" id="cfg-min-out">8 min</span>
       </div>
     </div>
 
     <div class="form-group">
-      <label>Break duration (before each station)</label>
+      <label>Change duration (between stations)</label>
       <div class="slider-row">
         <input type="range" id="cfg-break" min="30" max="300" value="60" step="10" oninput="document.getElementById('cfg-break-out').textContent=this.value+' s'" />
         <span class="slider-val" id="cfg-break-out">60 s</span>
       </div>
     </div>
 
+    <div class="form-group">
+      <label>Prep duration (immediately before station)</label>
+      <div class="slider-row">
+        <input type="range" id="cfg-prep" min="10" max="120" value="30" step="5" oninput="document.getElementById('cfg-prep-out').textContent=this.value+' s'" />
+        <span class="slider-val" id="cfg-prep-out">30 s</span>
+      </div>
+    </div>
+
     <div class="form-group" style="margin-bottom:0">
-      <label>Warning threshold (during station)</label>
+      <label>1-minute warning (during station)</label>
       <div class="slider-row">
         <input type="range" id="cfg-warn" min="30" max="180" value="60" step="10" oninput="document.getElementById('cfg-warn-out').textContent=this.value+' s'" />
         <span class="slider-val" id="cfg-warn-out">60 s</span>
@@ -466,7 +474,10 @@ To use:
       <h1 id="timer-session-name">OSCE Timer</h1>
       <p id="timer-sub">Initialising…</p>
     </div>
-    <span class="badge badge-gray" id="timer-badge">–</span>
+    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end;">
+      <span class="badge badge-gray" id="observer-count" style="display:none;">– connected</span>
+      <span class="badge badge-gray" id="timer-badge">–</span>
+    </div>
   </div>
 
   <div id="observer-banner" class="observer-banner" style="display:none;">
@@ -527,6 +538,26 @@ To use:
       <button onclick="copyRunningLink()" style="font-size:12px; padding:7px 12px;">Copy</button>
     </div>
   </div>
+
+  <div class="card-secondary" id="sound-settings-card" style="margin-top:.75rem; display:none;">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; cursor:pointer;" onclick="toggleSoundPanel()">
+      <h3 style="font-size:13px; color:var(--text2); text-transform:uppercase; letter-spacing:.05em;">🔊 Sound settings</h3>
+      <span style="font-size:12px; color:var(--text3);" id="sound-panel-toggle">▸ Show</span>
+    </div>
+    <div id="sound-panel-body" style="display:none;">
+      <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
+        <label style="font-size:13px; color:var(--text2);">Sounds enabled</label>
+        <input type="checkbox" id="sound-enabled-chk" style="width:18px;height:18px;cursor:pointer;" onchange="toggleSoundEnabled(this.checked)" />
+      </div>
+      <p style="font-size:12px; color:var(--text3); margin-bottom:10px;">Place mp3 files in the same folder as osce-timer.html. Leave blank to use built-in tones.</p>
+      <div id="sound-file-inputs"></div>
+      <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
+        <button onclick="saveSoundSettings()" style="font-size:12px; padding:6px 12px;">Save filenames</button>
+        <button onclick="testAllSounds()" style="font-size:12px; padding:6px 12px;">Test all sounds</button>
+        <button onclick="resetSoundDefaults()" style="font-size:12px; padding:6px 12px; color:var(--red);">Reset to defaults</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- PAGE: Session ended -->
@@ -558,9 +589,39 @@ let ticker = null;
 let lastSoundKeys = {};
 let advancing = false; // guard against double-advance
 let audioCtx = null;
+const deviceId = Math.random().toString(36).slice(2, 10); // unique per tab
 let audioReady = false;
 
 // ── Audio ────────────────────────────────────────────────
+//
+// Sound events — each maps to an mp3 file in the same folder.
+// Falls back to a generated tone if the file fails to load.
+// Controller can override filenames via the sound settings panel.
+//
+// Default file names (place these in the same folder as osce-timer.html):
+//   change-start.mp3   — played at start of Change phase
+//   prep-start.mp3     — played at start of Prep phase
+//   station-start.mp3  — played at start of Station phase
+//   station-end.mp3    — played when station time is up
+//   warning.mp3        — played at the 1-minute warning
+
+const SOUND_EVENTS = ['change-start','prep-start','station-start','station-end','warning'];
+
+// Loaded from localStorage so they survive refresh
+let soundFiles = JSON.parse(localStorage.getItem('osce_sounds') || 'null') || {
+  'change-start':   'change-start.mp3',
+  'prep-start':     'prep-start.mp3',
+  'station-start':  'station-start.mp3',
+  'station-end':    'station-end.mp3',
+  'warning':        'warning.mp3'
+};
+
+let soundEnabled = JSON.parse(localStorage.getItem('osce_sound_enabled') || 'true');
+
+function saveSoundPrefs() {
+  localStorage.setItem('osce_sounds', JSON.stringify(soundFiles));
+  localStorage.setItem('osce_sound_enabled', JSON.stringify(soundEnabled));
+}
 
 document.addEventListener('click',      unlockAudio, { once: true });
 document.addEventListener('touchstart', unlockAudio, { once: true });
@@ -592,10 +653,38 @@ function tone(freq, dur, vol=0.38, delay=0) {
   } catch(e) {}
 }
 
-function playTwoToneStart() { tone(660,.18,.4,0); tone(880,.22,.4,.22); }
-function playOneMinWarn()   { tone(520,.14,.38,0); tone(520,.14,.38,.22); tone(520,.14,.38,.44); }
-function playStationEnd()   { tone(880,.1,.44,0); tone(880,.1,.44,.14); tone(660,.1,.44,.28); tone(440,.35,.44,.42); }
-function playBreakWarn()    { tone(660,.18,.35,0); tone(880,.22,.35,.22); }
+// Fallback tones used when mp3 file fails or is missing
+const FALLBACK_TONES = {
+  'change-start':  () => { tone(660,.18,.4,0); tone(880,.22,.4,.22); },
+  'prep-start':    () => { tone(880,.18,.4,0); tone(1046,.22,.4,.22); },
+  'station-start': () => { tone(660,.18,.4,0); tone(880,.18,.4,.22); tone(1046,.3,.4,.44); },
+  'station-end':   () => { tone(880,.1,.44,0); tone(880,.1,.44,.14); tone(660,.1,.44,.28); tone(440,.35,.44,.42); },
+  'warning':       () => { tone(520,.14,.38,0); tone(520,.14,.38,.22); tone(520,.14,.38,.44); }
+};
+
+function playSound(event) {
+  if (!soundEnabled) return;
+  const filename = soundFiles[event];
+  if (filename) {
+    const audio = new Audio(filename);
+    audio.volume = 0.9;
+    audio.play().catch(() => {
+      // File not found or blocked — use fallback tone
+      if (FALLBACK_TONES[event]) FALLBACK_TONES[event]();
+    });
+  } else {
+    if (FALLBACK_TONES[event]) FALLBACK_TONES[event]();
+  }
+}
+
+// Named wrappers used by phase logic
+function playTwoToneStart()  { playSound('change-start'); }
+function playPrepStart()     { playSound('prep-start'); }
+function playStationStart()  { playSound('station-start'); }
+function playStationEnd()    { playSound('station-end'); }
+function playOneMinWarn()    { playSound('warning'); }
+// keep legacy names pointing to new system
+function playBreakWarn()     { playSound('change-start'); }
 
 // ── Utilities ────────────────────────────────────────────
 
@@ -737,11 +826,12 @@ async function createSession() {
   hideError('setup-error');
   if (!initFirebase()) return;
 
-  const stations   = Math.max(2, Math.min(12, parseInt(document.getElementById('cfg-stations').value) || 5));
+  const stations    = Math.max(2, Math.min(12, parseInt(document.getElementById('cfg-stations').value) || 5));
   const stationSecs = (parseInt(document.getElementById('cfg-min').value) || 8) * 60;
-  const breakSecs  = parseInt(document.getElementById('cfg-break').value) || 60;
-  const warnSecs   = parseInt(document.getElementById('cfg-warn').value) || 60;
-  const name       = document.getElementById('cfg-name').value.trim() || 'OSCE Session';
+  const breakSecs   = parseInt(document.getElementById('cfg-break').value) || 60;
+  const prepSecs    = parseInt(document.getElementById('cfg-prep').value) || 30;
+  const warnSecs    = parseInt(document.getElementById('cfg-warn').value) || 60;
+  const name        = document.getElementById('cfg-name').value.trim() || 'OSCE Session';
 
   sessionCode = generateCode();
   sessionRef  = db.ref('sessions/' + sessionCode);
@@ -749,7 +839,7 @@ async function createSession() {
   const controllerId = claimController(sessionCode);
 
   const initState = {
-    cfg: { stations, stationSecs, breakSecs, warnSecs, name },
+    cfg: { stations, stationSecs, breakSecs, prepSecs, warnSecs, name },
     phase: 'waiting',
     stationIdx: 0,
     completedStations: 0,
@@ -812,12 +902,11 @@ function startSession() {
 }
 
 function beginSession() {
-  // Called by the "Begin session" button on the timer page.
   if (!sessionRef || !isController) return;
   const now = Date.now();
   const cfg2 = localState.cfg;
   const update = {
-    phase: 'break',
+    phase: 'change',
     stationIdx: 0,
     completedStations: 0,
     phaseStartedAt: now,
@@ -830,8 +919,9 @@ function beginSession() {
   Object.assign(localState, update);
   sessionRef.update(update);
   if (db && sessionCode && localState.cfg) {
-    db.ref('sessionIndex/' + sessionCode).update({ phase: 'break', stationIdx: 0, updatedAt: Date.now() });
+    db.ref('sessionIndex/' + sessionCode).update({ phase: 'change', stationIdx: 0, updatedAt: Date.now() });
   }
+  soundOnce('change-start-0', playTwoToneStart);
 }
 
 function startObserving() {
@@ -839,6 +929,20 @@ function startObserving() {
   // offline), immediately run any missed phase transitions before starting.
   catchUpOverduePhases().then(() => {
     initTimerPage();
+
+    // Register this device as a viewer; remove on disconnect
+    const myPresenceRef = sessionRef.child('observers/' + deviceId);
+    myPresenceRef.onDisconnect().remove();
+    myPresenceRef.set({ ts: Date.now(), isController: isController ? true : false });
+
+    // Watch observer count (controller only)
+    if (isController) {
+      sessionRef.child('observers').on('value', snap => {
+        const count = snap.exists() ? Object.keys(snap.val()).length : 0;
+        const el = document.getElementById('observer-count');
+        if (el) el.textContent = count + ' connected';
+      });
+    }
 
     sessionRef.on('value', snap => {
       if (!snap.exists()) {
@@ -882,35 +986,38 @@ async function catchUpOverduePhases() {
   while (safetyLimit++ < 50) {
     if (state.phase === 'ended') break;
 
+    let phaseDurMs;
+    if (state.phase === 'change') phaseDurMs = state.cfg.breakSecs * 1000;
+    else if (state.phase === 'prep') phaseDurMs = (state.cfg.prepSecs || 30) * 1000;
+    else phaseDurMs = state.cfg.stationSecs * 1000;
     const endsAt = state.phaseEndsAt ||
-      (state.phaseStartedAt + (state.phase === 'break'
-        ? state.cfg.breakSecs * 1000
-        : state.cfg.stationSecs * 1000)
-      - (state.totalPausedMs || 0));
+      (state.phaseStartedAt + phaseDurMs - (state.totalPausedMs || 0));
 
     if (now < endsAt) break; // this phase hasn't expired yet — stop
 
     changed = true;
 
-    if (state.phase === 'break') {
-      // Break ended → start station
-      const phaseStartedAt = endsAt;
-      const phaseEndsAt = endsAt + state.cfg.stationSecs * 1000;
-      state = { ...state, phase: 'station', phaseStartedAt, phaseEndsAt,
+    if (state.phase === 'change') {
+      const prepSecs = state.cfg.prepSecs || 30;
+      state = { ...state, phase: 'prep',
+        phaseStartedAt: endsAt, phaseEndsAt: endsAt + prepSecs * 1000,
+        pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now };
+
+    } else if (state.phase === 'prep') {
+      state = { ...state, phase: 'station',
+        phaseStartedAt: endsAt, phaseEndsAt: endsAt + state.cfg.stationSecs * 1000,
         pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now };
 
     } else if (state.phase === 'station') {
-      // Station ended → next break or end
       const newCompleted = state.stationIdx + 1;
       if (newCompleted >= state.cfg.stations) {
         state = { ...state, phase: 'ended', ts: now };
         break;
       }
       const nextIdx = state.stationIdx + 1;
-      const phaseStartedAt = endsAt;
-      const phaseEndsAt = endsAt + state.cfg.breakSecs * 1000;
-      state = { ...state, phase: 'break', stationIdx: nextIdx,
-        completedStations: newCompleted, phaseStartedAt, phaseEndsAt,
+      state = { ...state, phase: 'change', stationIdx: nextIdx,
+        completedStations: newCompleted,
+        phaseStartedAt: endsAt, phaseEndsAt: endsAt + state.cfg.breakSecs * 1000,
         pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now };
     }
   }
@@ -942,6 +1049,8 @@ function initTimerPage() {
     document.getElementById('observer-banner').style.display       = 'none';
     document.getElementById('ctrl-offline-banner').style.display   = 'none';
     document.getElementById('obs-buttons').style.display           = 'none';
+    document.getElementById('observer-count').style.display        = 'inline-flex';
+    document.getElementById('sound-settings-card').style.display   = 'block';
     // begin/retime visibility handled by renderTimer based on phase
   } else {
     document.getElementById('ctrl-begin').style.display        = 'none';
@@ -991,22 +1100,21 @@ function phaseElapsed() {
   return now - localState.phaseStartedAt - (localState.totalPausedMs || 0);
 }
 
-// How many ms remain in the current phase.
-// Uses phaseEndsAt (Firebase-stored) when available so all devices agree exactly.
+function phaseTotalMs(s) {
+  const cfg = s.cfg;
+  if (s.phase === 'change') return cfg.breakSecs * 1000;
+  if (s.phase === 'prep')   return (cfg.prepSecs || 30) * 1000;
+  if (s.phase === 'station') return cfg.stationSecs * 1000;
+  return 0;
+}
+
 function phaseRemaining() {
   if (!localState) return 0;
-  const cfg = localState.cfg;
-  const isBreak = localState.phase === 'break';
-  const totalMs = (isBreak ? cfg.breakSecs : cfg.stationSecs) * 1000;
-
   if (localState.phaseEndsAt) {
-    // Adjust for accumulated pause time and current pause
-    const pausedMs = (localState.totalPausedMs || 0) +
-      (localState.pausedAt ? Date.now() - localState.pausedAt : 0);
-    return Math.max(0, localState.phaseEndsAt - Date.now() + pausedMs - (localState.totalPausedMs||0));
+    const pausedMs = localState.pausedAt ? Date.now() - localState.pausedAt : 0;
+    return Math.max(0, localState.phaseEndsAt - Date.now() - pausedMs);
   }
-  // Fallback for sessions created before phaseEndsAt was added
-  return Math.max(0, totalMs - phaseElapsed());
+  return Math.max(0, phaseTotalMs(localState) - phaseElapsed());
 }
 function soundOnce(key, fn) {
   if (lastSoundKeys[key]) return;
@@ -1043,8 +1151,8 @@ function renderTimer() {
     document.getElementById('ctrl-buttons').style.display = 'flex';
     document.getElementById('retime-card').style.display  = 'block';
     // Seed retime slider with current phase duration if not already set by user
-    const phaseDurSecs = localState.phase === 'break'
-      ? localState.cfg.breakSecs : localState.cfg.stationSecs;
+    const durMap = { change: localState.cfg.breakSecs, prep: localState.cfg.prepSecs||30, station: localState.cfg.stationSecs };
+    const phaseDurSecs = durMap[localState.phase] || localState.cfg.stationSecs;
     const slider = document.getElementById('retime-slider');
     if (slider && !slider._userTouched) {
       slider.max = Math.max(1800, phaseDurSecs + 300);
@@ -1064,8 +1172,7 @@ function renderTimer() {
   updateDots();
 
   const cfg      = localState.cfg;
-  const isBreak  = localState.phase === 'break';
-  const totalMs  = (isBreak ? cfg.breakSecs : cfg.stationSecs) * 1000;
+  const totalMs  = phaseTotalMs(localState);
   const remaining = phaseRemaining();
   const secsLeft  = Math.ceil(remaining / 1000);
   const dMins     = Math.floor(remaining / 60000);
@@ -1092,51 +1199,52 @@ function renderTimer() {
   }
   document.getElementById('pause-btn').textContent = '⏸ Pause';
 
-  if (isBreak) {
-    phaseTag.textContent = 'BREAK';
-    const bn = localState.stationIdx;
-    stName.textContent = bn === 0
-      ? 'Opening break — station 1 starting soon'
-      : 'Break ' + bn + ' of ' + (cfg.stations-1) + ' — station ' + (localState.stationIdx+1) + ' next';
+  const phase = localState.phase;
+  const idx   = localState.stationIdx;
+
+  if (phase === 'change') {
+    phaseTag.textContent = idx === 0 ? 'CHANGE' : 'CHANGE';
+    stName.textContent = idx === 0
+      ? 'Opening change — station 1 coming up'
+      : 'Change ' + idx + ' of ' + (cfg.stations - 1) + ' — station ' + (idx + 1) + ' next';
     bt.className = 'big-time teal'; pf.className = 'prog-fill';
-    badge.className = 'badge badge-teal'; badge.textContent = 'Break';
-    sub.textContent = 'Station ' + (localState.stationIdx+1) + ' coming up';
+    badge.className = 'badge badge-teal'; badge.textContent = 'Change';
+    sub.textContent = 'Station ' + (idx + 1) + ' coming up';
+    if (remaining <= 0) scheduleAdvance('prep');
 
-    const warnAt = Math.min(60, cfg.breakSecs - 5);
-    if (secsLeft <= warnAt+1 && secsLeft > warnAt-2)
-      soundOnce('break-warn-' + localState.stationIdx, playBreakWarn);
-    if (secsLeft <= 3 && secsLeft >= 1)
-      soundOnce('break-end-' + localState.stationIdx, playBreakWarn);
-
+  } else if (phase === 'prep') {
+    phaseTag.textContent = 'PREP';
+    stName.textContent = 'Prep for station ' + (idx + 1) + ' — get ready';
+    bt.className = 'big-time amber'; pf.className = 'prog-fill amber';
+    badge.className = 'badge badge-amber'; badge.textContent = 'Prep';
+    sub.textContent = 'Station ' + (idx + 1) + ' starting soon';
     if (remaining <= 0) scheduleAdvance('station');
 
-  } else {
-    phaseTag.textContent = 'STATION ' + (localState.stationIdx+1) + ' OF ' + cfg.stations;
-    stName.textContent = cfg.name
-      ? cfg.name + ' · Station ' + (localState.stationIdx+1)
-      : 'Station ' + (localState.stationIdx+1);
+  } else if (phase === 'station') {
+    phaseTag.textContent = 'STATION ' + (idx + 1) + ' OF ' + cfg.stations;
+    stName.textContent = cfg.name ? cfg.name + ' · Station ' + (idx + 1) : 'Station ' + (idx + 1);
 
     const isWarn   = secsLeft <= cfg.warnSecs && secsLeft > 10;
     const isDanger = secsLeft <= 10 && secsLeft > 0;
 
     if (isDanger) {
-      bt.className='big-time red pulse'; pf.className='prog-fill red';
-      badge.className='badge badge-red'; badge.textContent='⚠ Time up soon';
+      bt.className = 'big-time red pulse'; pf.className = 'prog-fill red';
+      badge.className = 'badge badge-red'; badge.textContent = '⚠ Time up soon';
     } else if (isWarn) {
-      bt.className='big-time amber'; pf.className='prog-fill amber';
-      badge.className='badge badge-amber'; badge.textContent=cfg.warnSecs+'s warning';
+      bt.className = 'big-time amber'; pf.className = 'prog-fill amber';
+      badge.className = 'badge badge-amber'; badge.textContent = cfg.warnSecs + 's warning';
     } else {
-      bt.className='big-time'; pf.className='prog-fill';
-      badge.className='badge badge-teal'; badge.textContent='Running';
+      bt.className = 'big-time'; pf.className = 'prog-fill';
+      badge.className = 'badge badge-teal'; badge.textContent = 'Running';
     }
-    sub.textContent = 'Station ' + (localState.stationIdx+1) + ' of ' + cfg.stations;
+    sub.textContent = 'Station ' + (idx + 1) + ' of ' + cfg.stations;
 
-    if (secsLeft <= cfg.warnSecs+1 && secsLeft > cfg.warnSecs-2)
-      soundOnce('warn-' + localState.stationIdx, playOneMinWarn);
+    if (secsLeft <= cfg.warnSecs + 1 && secsLeft > cfg.warnSecs - 2)
+      soundOnce('warn-' + idx, playOneMinWarn);
     if (secsLeft <= 4 && secsLeft >= 1)
-      soundOnce('end-' + localState.stationIdx, playStationEnd);
+      soundOnce('end-' + idx, playStationEnd);
 
-    if (remaining <= 0) scheduleAdvance('break');
+    if (remaining <= 0) scheduleAdvance('change');
   }
 }
 
@@ -1164,8 +1272,9 @@ function scheduleAdvance(to) {
   const delay = isController ? 0 : 3000;
   advanceTimer = setTimeout(() => {
     advanceTimer = null;
-    if (to === 'station') advanceToStation();
-    else advanceToBreakOrEnd();
+    if (to === 'prep') advanceToPrep();
+    else if (to === 'station') advanceToStation();
+    else advanceToChangeOrEnd();
   }, delay);
 }
 
@@ -1173,6 +1282,22 @@ function scheduleAdvance(to) {
 // (already done in the listener via advancing=false, but also clear the timeout)
 function cancelScheduledAdvance() {
   if (advanceTimer) { clearTimeout(advanceTimer); advanceTimer = null; }
+}
+
+function advanceToPrep() {
+  if (!sessionRef || advancing) return;
+  advancing = true;
+  const now = Date.now();
+  const prepSecs = (localState.cfg.prepSecs || 30);
+  const update = {
+    phase: 'prep', phaseStartedAt: now,
+    phaseEndsAt: now + prepSecs * 1000,
+    pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now
+  };
+  sessionRef.update(update).then(() => { advancing = false; });
+  lastSoundKeys = {};
+  soundOnce('prep-start-' + localState.stationIdx, playPrepStart);
+  updateSessionIndex('prep', localState.stationIdx);
 }
 
 function advanceToStation() {
@@ -1190,7 +1315,7 @@ function advanceToStation() {
   updateSessionIndex('station', localState.stationIdx);
 }
 
-function advanceToBreakOrEnd() {
+function advanceToChangeOrEnd() {
   if (!sessionRef || advancing) return;
   advancing = true;
   const newCompleted = localState.stationIdx + 1;
@@ -1204,14 +1329,15 @@ function advanceToBreakOrEnd() {
   const now = Date.now();
   const nextIdx = localState.stationIdx + 1;
   const update = {
-    phase: 'break', stationIdx: nextIdx,
+    phase: 'change', stationIdx: nextIdx,
     completedStations: newCompleted, phaseStartedAt: now,
     phaseEndsAt: now + localState.cfg.breakSecs * 1000,
     pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now
   };
   sessionRef.update(update).then(() => { advancing = false; });
   lastSoundKeys = {};
-  updateSessionIndex('break', nextIdx);
+  soundOnce('change-start-' + nextIdx, playTwoToneStart);
+  updateSessionIndex('change', nextIdx);
 }
 
 // ── Controls ─────────────────────────────────────────────
@@ -1219,8 +1345,11 @@ function advanceToBreakOrEnd() {
 function skipPhase() {
   if (!isController) return;
   lastSoundKeys = {};
-  if (localState.phase === 'break') advanceToStation();
-  else advanceToBreakOrEnd();
+  cancelScheduledAdvance();
+  advancing = false;
+  if (localState.phase === 'change') advanceToPrep();
+  else if (localState.phase === 'prep') advanceToStation();
+  else if (localState.phase === 'station') advanceToChangeOrEnd();
 }
 
 function rollbackPhase() {
@@ -1232,52 +1361,38 @@ function rollbackPhase() {
   let update;
 
   if (s.phase === 'station') {
-    // Roll back to the break before this station (same stationIdx)
-    const dur = cfg.breakSecs * 1000;
+    // station → prep (same station)
     update = {
-      phase: 'break',
-      stationIdx: s.stationIdx,
+      phase: 'prep', stationIdx: s.stationIdx,
       completedStations: Math.max(0, s.stationIdx),
-      phaseStartedAt: now,
-      phaseEndsAt: now + dur,
-      pausedAt: null,
-      totalPausedMs: 0,
-      soundLog: {},
-      ts: now
+      phaseStartedAt: now, phaseEndsAt: now + (cfg.prepSecs||30) * 1000,
+      pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now
     };
-
-  } else if (s.phase === 'break' && s.stationIdx === 0) {
-    // Roll back to waiting (before session began)
+  } else if (s.phase === 'prep') {
+    // prep → change (same station)
     update = {
-      phase: 'waiting',
-      stationIdx: 0,
-      completedStations: 0,
-      phaseStartedAt: null,
-      phaseEndsAt: null,
-      pausedAt: null,
-      totalPausedMs: 0,
-      soundLog: {},
-      ts: now
+      phase: 'change', stationIdx: s.stationIdx,
+      completedStations: Math.max(0, s.stationIdx),
+      phaseStartedAt: now, phaseEndsAt: now + cfg.breakSecs * 1000,
+      pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now
     };
-
-  } else if (s.phase === 'break' && s.stationIdx > 0) {
-    // Roll back to the previous station
+  } else if (s.phase === 'change' && s.stationIdx === 0) {
+    // first change → waiting
+    update = {
+      phase: 'waiting', stationIdx: 0, completedStations: 0,
+      phaseStartedAt: null, phaseEndsAt: null,
+      pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now
+    };
+  } else if (s.phase === 'change' && s.stationIdx > 0) {
+    // change → previous station
     const prevIdx = s.stationIdx - 1;
-    const dur = cfg.stationSecs * 1000;
     update = {
-      phase: 'station',
-      stationIdx: prevIdx,
-      completedStations: prevIdx,
-      phaseStartedAt: now,
-      phaseEndsAt: now + dur,
-      pausedAt: null,
-      totalPausedMs: 0,
-      soundLog: {},
-      ts: now
+      phase: 'station', stationIdx: prevIdx, completedStations: prevIdx,
+      phaseStartedAt: now, phaseEndsAt: now + cfg.stationSecs * 1000,
+      pausedAt: null, totalPausedMs: 0, soundLog: {}, ts: now
     };
-
   } else {
-    return; // nothing to roll back (waiting / ended)
+    return;
   }
 
   advancing = false;
@@ -1286,7 +1401,6 @@ function rollbackPhase() {
   Object.assign(localState, update);
   sessionRef.update(update);
 
-  // Update session index
   if (db && sessionCode) {
     if (update.phase === 'waiting') {
       db.ref('sessionIndex/' + sessionCode).update({ phase: 'waiting', stationIdx: 0, updatedAt: now });
@@ -1295,8 +1409,8 @@ function rollbackPhase() {
     }
   }
 
-  // Seed retime slider to new phase duration
-  const newDurSecs = update.phase === 'break' ? cfg.breakSecs : cfg.stationSecs;
+  const durMap = { change: cfg.breakSecs, prep: cfg.prepSecs||30, station: cfg.stationSecs };
+  const newDurSecs = durMap[update.phase] || cfg.stationSecs;
   const slider = document.getElementById('retime-slider');
   if (slider) { slider.value = newDurSecs; slider._userTouched = false; updateRetimeLabel(newDurSecs); }
 }
@@ -1393,13 +1507,87 @@ function copyRunningLink() {
   });
 }
 
+// ── Sound settings panel ─────────────────────────────────
+
+const SOUND_LABELS = {
+  'change-start':  'Start of Change',
+  'prep-start':    'Start of Prep',
+  'station-start': 'Start of Station',
+  'station-end':   'End of Station',
+  'warning':       '1-minute warning'
+};
+
+function initSoundPanel() {
+  const container = document.getElementById('sound-file-inputs');
+  if (!container) return;
+  container.innerHTML = '';
+  SOUND_EVENTS.forEach(evt => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:8px;';
+    row.innerHTML =
+      '<label style="font-size:12px;color:var(--text2);min-width:130px;">' + SOUND_LABELS[evt] + '</label>' +
+      '<input type="text" id="snd-' + evt + '" value="' + (soundFiles[evt]||'') + '" placeholder="filename.mp3" style="flex:1;font-size:12px;padding:5px 8px;" />' +
+      '<button onclick="testSound('' + evt + '')" style="font-size:11px;padding:4px 8px;white-space:nowrap;">▶ Test</button>';
+    container.appendChild(row);
+  });
+  const chk = document.getElementById('sound-enabled-chk');
+  if (chk) chk.checked = soundEnabled;
+}
+
+function toggleSoundPanel() {
+  const body = document.getElementById('sound-panel-body');
+  const toggle = document.getElementById('sound-panel-toggle');
+  if (!body) return;
+  const open = body.style.display === 'none';
+  body.style.display = open ? 'block' : 'none';
+  if (toggle) toggle.textContent = open ? '▾ Hide' : '▸ Show';
+  if (open) initSoundPanel();
+}
+
+function toggleSoundEnabled(val) {
+  soundEnabled = val;
+  saveSoundPrefs();
+}
+
+function saveSoundSettings() {
+  SOUND_EVENTS.forEach(evt => {
+    const el = document.getElementById('snd-' + evt);
+    if (el) soundFiles[evt] = el.value.trim();
+  });
+  saveSoundPrefs();
+  const btn = document.querySelector('#sound-panel-body button');
+  if (btn) { btn.textContent = 'Saved ✓'; setTimeout(() => { btn.textContent = 'Save filenames'; }, 1500); }
+}
+
+function testSound(evt) { playSound(evt); }
+
+function testAllSounds() {
+  SOUND_EVENTS.forEach((evt, i) => { setTimeout(() => playSound(evt), i * 1200); });
+}
+
+function resetSoundDefaults() {
+  soundFiles = {
+    'change-start':  'change-start.mp3',
+    'prep-start':    'prep-start.mp3',
+    'station-start': 'station-start.mp3',
+    'station-end':   'station-end.mp3',
+    'warning':       'warning.mp3'
+  };
+  saveSoundPrefs();
+  initSoundPanel();
+}
+
 // ── Clean navigation home ────────────────────────────────
 
 function goHome() {
   // Tear down any active session listeners and timers
   clearInterval(ticker);
   ticker = null;
-  if (sessionRef) { sessionRef.off(); sessionRef = null; }
+  if (sessionRef) {
+    sessionRef.child('observers/' + deviceId).remove();
+    sessionRef.off();
+    sessionRef = null;
+  }
   advancing = false;
   localState = null;
   sessionCode = null;
