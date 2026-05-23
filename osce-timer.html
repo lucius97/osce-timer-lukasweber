@@ -1525,7 +1525,7 @@ function initSoundPanel() {
     row.innerHTML =
       '<label style="font-size:12px;color:var(--text2);min-width:130px;">' + SOUND_LABELS[evt] + '</label>' +
       '<input type="text" id="snd-' + evt + '" value="' + (soundFiles[evt]||'') + '" placeholder="filename.mp3" style="flex:1;font-size:12px;padding:5px 8px;" />' +
-      '<button onclick="testSound('' + evt + '')" style="font-size:11px;padding:4px 8px;white-space:nowrap;">▶ Test</button>';
+      '<button onclick="testSound(&quot;' + evt + '&quot;)" style="font-size:11px;padding:4px 8px;white-space:nowrap;">&#9654; Test</button>';
     container.appendChild(row);
   });
   const chk = document.getElementById('sound-enabled-chk');
