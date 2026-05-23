@@ -1163,8 +1163,9 @@ function phaseTotalMs(s) {
 function phaseRemaining() {
   if (!localState) return 0;
   if (localState.phaseEndsAt) {
-    const pausedMs = localState.pausedAt ? Date.now() - localState.pausedAt : 0;
-    return Math.max(0, localState.phaseEndsAt - Date.now() - pausedMs);
+    // When paused, freeze time at the moment pause was pressed
+    const now = localState.pausedAt ? localState.pausedAt : Date.now();
+    return Math.max(0, localState.phaseEndsAt - now);
   }
   return Math.max(0, phaseTotalMs(localState) - phaseElapsed());
 }
