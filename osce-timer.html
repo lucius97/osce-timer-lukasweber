@@ -380,7 +380,7 @@ To use:
     <div class="form-row">
       <div class="form-group" style="margin-bottom:0">
         <label>Stations</label>
-        <input type="number" id="cfg-stations" min="2" max="12" value="7" />
+        <input type="number" id="cfg-stations" min="2" max="12" value="5" />
       </div>
       <div class="form-group" style="margin-bottom:0">
         <label>Session name (optional)</label>
@@ -393,8 +393,8 @@ To use:
     <div class="form-group">
       <label>Station duration</label>
       <div class="slider-row">
-        <input type="range" id="cfg-min" min="1" max="20" value="4" step="1" oninput="document.getElementById('cfg-min-out').textContent=this.value+' min'" />
-        <span class="slider-val" id="cfg-min-out">4 min</span>
+        <input type="range" id="cfg-min" min="1" max="20" value="8" step="1" oninput="document.getElementById('cfg-min-out').textContent=this.value+' min'" />
+        <span class="slider-val" id="cfg-min-out">8 min</span>
       </div>
     </div>
 
@@ -409,8 +409,8 @@ To use:
     <div class="form-group">
       <label>Prep duration (immediately before station)</label>
       <div class="slider-row">
-        <input type="range" id="cfg-prep" min="10" max="120" value="60" step="5" oninput="document.getElementById('cfg-prep-out').textContent=this.value+' s'" />
-        <span class="slider-val" id="cfg-prep-out">60 s</span>
+        <input type="range" id="cfg-prep" min="10" max="120" value="30" step="5" oninput="document.getElementById('cfg-prep-out').textContent=this.value+' s'" />
+        <span class="slider-val" id="cfg-prep-out">30 s</span>
       </div>
     </div>
 
@@ -1039,14 +1039,21 @@ function startObserving() {
       });
     }
 
-    // Sound cue listener — fires on all devices when controller writes a cue
+    // Sound cue listener — only plays cues written after this device joined.
+    // Using the join timestamp prevents replaying old cues on reconnect.
+    const joinedAt = now();
     sessionRef.child('soundCue').on('value', snap => {
-      if (snap.exists()) onSoundCue(snap.val());
+      if (!snap.exists()) return;
+      const cue = snap.val();
+      // Ignore cues from before we joined (replayed on initial attach or reconnect)
+      if (!cue.at || cue.at <= joinedAt) return;
+      onSoundCue(cue);
     });
 
     sessionRef.on('value', snap => {
       if (!snap.exists()) {
         stopTicker();
+        if (sessionRef) { sessionRef.off(); sessionRef = null; }
         showPage('page-ended');
         document.getElementById('ended-msg').textContent = 'The session was ended by the controller.';
         return;
@@ -1737,7 +1744,7 @@ function goHome() {
   stopTicker();
   if (sessionRef) {
     sessionRef.child('observers/' + deviceId).remove();
-    sessionRef.off();
+    sessionRef.off(); // removes all child listeners including soundCue and presence
     sessionRef = null;
   }
   advancing = false;
